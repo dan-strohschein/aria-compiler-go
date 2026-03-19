@@ -1,0 +1,388 @@
+mod main
+
+// ============================================================
+// Mini Lexer: A simplified lexer written in Aria
+// Validates: sum types, pattern matching, structs, string ops,
+// closures, loops, and control flow (300+ lines).
+// ============================================================
+
+// --- Token types ---
+
+type TokenType =
+    | TokIdent
+    | TokInt
+    | TokString
+    | TokPlus
+    | TokMinus
+    | TokStar
+    | TokSlash
+    | TokEq
+    | TokEqEq
+    | TokBang
+    | TokBangEq
+    | TokLParen
+    | TokRParen
+    | TokLBrace
+    | TokRBrace
+    | TokComma
+    | TokColon
+    | TokDot
+    | TokArrow
+    | TokKeyword
+    | TokEof
+    | TokError
+
+// --- Token struct ---
+
+struct Token {
+    typ: TokenType
+    value: str
+    line: i64
+    col: i64
+}
+
+// --- Token type name for display ---
+
+fn tokenTypeName(t: TokenType) -> str = match t {
+    TokIdent => "IDENT"
+    TokInt => "INT"
+    TokString => "STRING"
+    TokPlus => "PLUS"
+    TokMinus => "MINUS"
+    TokStar => "STAR"
+    TokSlash => "SLASH"
+    TokEq => "EQ"
+    TokEqEq => "EQEQ"
+    TokBang => "BANG"
+    TokBangEq => "BANGEQ"
+    TokLParen => "LPAREN"
+    TokRParen => "RPAREN"
+    TokLBrace => "LBRACE"
+    TokRBrace => "RBRACE"
+    TokComma => "COMMA"
+    TokColon => "COLON"
+    TokDot => "DOT"
+    TokArrow => "ARROW"
+    TokKeyword => "KEYWORD"
+    TokEof => "EOF"
+    TokError => "ERROR"
+}
+
+fn formatToken(tok: Token) -> str =
+    "{tokenTypeName(tok.typ)}({tok.value}) at {tok.line}:{tok.col}"
+
+// --- Character classification ---
+
+fn isDigit(c: str) -> bool =
+    c == "0" || c == "1" || c == "2" || c == "3" || c == "4" ||
+    c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+
+fn isAlpha(c: str) -> bool =
+    c == "a" || c == "b" || c == "c" || c == "d" || c == "e" ||
+    c == "f" || c == "g" || c == "h" || c == "i" || c == "j" ||
+    c == "k" || c == "l" || c == "m" || c == "n" || c == "o" ||
+    c == "p" || c == "q" || c == "r" || c == "s" || c == "t" ||
+    c == "u" || c == "v" || c == "w" || c == "x" || c == "y" ||
+    c == "z" || c == "A" || c == "B" || c == "C" || c == "_"
+
+fn isAlphaNum(c: str) -> bool = isAlpha(c) || isDigit(c)
+
+fn isWhitespace(c: str) -> bool =
+    c == " " || c == "\t" || c == "\r" || c == "\n"
+
+// --- Keywords ---
+
+fn isKeyword(word: str) -> bool =
+    word == "fn" || word == "if" || word == "else" ||
+    word == "match" || word == "for" || word == "while" ||
+    word == "return" || word == "true" || word == "false" ||
+    word == "type" || word == "struct" || word == "mod" ||
+    word == "use" || word == "pub" || word == "const" ||
+    word == "mut" || word == "entry" || word == "test"
+
+// --- Scan helpers: extract a run of characters ---
+
+fn scanWhile(source: str, start: i64, predicate: fn(str) -> bool) -> str {
+    mut end := start
+    mut running := true
+    while running {
+        if end >= source.len() {
+            running = false
+        } else {
+            c := source.charAt(end)
+            if predicate(c) {
+                end = end + 1
+            } else {
+                running = false
+            }
+        }
+    }
+    source.substring(start, end)
+}
+
+// --- Main tokenizer ---
+
+fn tokenize(source: str) -> [Token] {
+    mut tokens := [Token{typ: TokEof, value: "", line: 0, col: 0}]
+    mut pos := 0
+    mut line := 1
+    mut col := 1
+
+    while pos < source.len() {
+        c := source.charAt(pos)
+
+        if isWhitespace(c) {
+            if c == "\n" {
+                line = line + 1
+                col = 1
+            } else {
+                col = col + 1
+            }
+            pos = pos + 1
+        } else if isDigit(c) {
+            value := scanWhile(source, pos, fn(ch: str) => isDigit(ch))
+            tokens = tokens.append(Token{typ: TokInt, value: value, line: line, col: col})
+            pos = pos + value.len()
+            col = col + value.len()
+        } else if isAlpha(c) {
+            value := scanWhile(source, pos, fn(ch: str) => isAlphaNum(ch))
+            if isKeyword(value) {
+                tokens = tokens.append(Token{typ: TokKeyword, value: value, line: line, col: col})
+            } else {
+                tokens = tokens.append(Token{typ: TokIdent, value: value, line: line, col: col})
+            }
+            pos = pos + value.len()
+            col = col + value.len()
+        } else if c == "+" {
+            tokens = tokens.append(Token{typ: TokPlus, value: "+", line: line, col: col})
+            pos = pos + 1
+            col = col + 1
+        } else if c == "-" {
+            next := pos + 1
+            if next < source.len() {
+                if source.charAt(next) == ">" {
+                    tokens = tokens.append(Token{typ: TokArrow, value: "->", line: line, col: col})
+                    pos = pos + 2
+                    col = col + 2
+                } else {
+                    tokens = tokens.append(Token{typ: TokMinus, value: "-", line: line, col: col})
+                    pos = pos + 1
+                    col = col + 1
+                }
+            } else {
+                tokens = tokens.append(Token{typ: TokMinus, value: "-", line: line, col: col})
+                pos = pos + 1
+                col = col + 1
+            }
+        } else if c == "*" {
+            tokens = tokens.append(Token{typ: TokStar, value: "*", line: line, col: col})
+            pos = pos + 1
+            col = col + 1
+        } else if c == "/" {
+            tokens = tokens.append(Token{typ: TokSlash, value: "/", line: line, col: col})
+            pos = pos + 1
+            col = col + 1
+        } else if c == "=" {
+            next := pos + 1
+            if next < source.len() {
+                if source.charAt(next) == "=" {
+                    tokens = tokens.append(Token{typ: TokEqEq, value: "==", line: line, col: col})
+                    pos = pos + 2
+                    col = col + 2
+                } else {
+                    tokens = tokens.append(Token{typ: TokEq, value: "=", line: line, col: col})
+                    pos = pos + 1
+                    col = col + 1
+                }
+            } else {
+                tokens = tokens.append(Token{typ: TokEq, value: "=", line: line, col: col})
+                pos = pos + 1
+                col = col + 1
+            }
+        } else if c == "!" {
+            next := pos + 1
+            if next < source.len() {
+                if source.charAt(next) == "=" {
+                    tokens = tokens.append(Token{typ: TokBangEq, value: "!=", line: line, col: col})
+                    pos = pos + 2
+                    col = col + 2
+                } else {
+                    tokens = tokens.append(Token{typ: TokBang, value: "!", line: line, col: col})
+                    pos = pos + 1
+                    col = col + 1
+                }
+            } else {
+                tokens = tokens.append(Token{typ: TokBang, value: "!", line: line, col: col})
+                pos = pos + 1
+                col = col + 1
+            }
+        } else if c == "(" {
+            tokens = tokens.append(Token{typ: TokLParen, value: "(", line: line, col: col})
+            pos = pos + 1
+            col = col + 1
+        } else if c == ")" {
+            tokens = tokens.append(Token{typ: TokRParen, value: ")", line: line, col: col})
+            pos = pos + 1
+            col = col + 1
+        } else if c == "," {
+            tokens = tokens.append(Token{typ: TokComma, value: ",", line: line, col: col})
+            pos = pos + 1
+            col = col + 1
+        } else if c == ":" {
+            tokens = tokens.append(Token{typ: TokColon, value: ":", line: line, col: col})
+            pos = pos + 1
+            col = col + 1
+        } else if c == "." {
+            tokens = tokens.append(Token{typ: TokDot, value: ".", line: line, col: col})
+            pos = pos + 1
+            col = col + 1
+        } else {
+            tokens = tokens.append(Token{typ: TokError, value: c, line: line, col: col})
+            pos = pos + 1
+            col = col + 1
+        }
+    }
+
+    tokens = tokens.append(Token{typ: TokEof, value: "", line: line, col: col})
+    tokens
+}
+
+// --- Token counting ---
+
+fn countByType(tokens: [Token], typeName: str) -> i64 {
+    mut count := 0
+    for tok in tokens {
+        if tokenTypeName(tok.typ) == typeName {
+            count = count + 1
+        }
+    }
+    count
+}
+
+// --- Token filtering ---
+
+fn filterByType(tokens: [Token], typeName: str) -> [Token] {
+    mut result := [Token{typ: TokEof, value: "", line: 0, col: 0}]
+    for tok in tokens {
+        if tokenTypeName(tok.typ) == typeName {
+            result = result.append(tok)
+        }
+    }
+    result
+}
+
+// --- Source reconstruction ---
+
+fn joinValues(tokens: [Token], separator: str) -> str {
+    mut result := ""
+    mut first := true
+    for tok in tokens {
+        if tokenTypeName(tok.typ) != "EOF" {
+            if first {
+                result = tok.value
+                first = false
+            } else {
+                result = result + separator + tok.value
+            }
+        }
+    }
+    result
+}
+
+// --- Entry point ---
+
+entry {
+    source := "fn add(x: i64, y: i64) -> i64 = x + y"
+    tokens := tokenize(source)
+
+    println("=== Mini Lexer Output ===")
+    println("Source: {source}")
+    println("Token count: {tokens.len()}")
+    println("")
+
+    for tok in tokens {
+        println(formatToken(tok))
+    }
+
+    // Statistics
+    println("")
+    println("--- Statistics ---")
+    idents := countByType(tokens, "IDENT")
+    keywords := countByType(tokens, "KEYWORD")
+    ints := countByType(tokens, "INT")
+    println("Identifiers: {idents}")
+    println("Keywords: {keywords}")
+    println("Integers: {ints}")
+
+    // Filter and display just identifiers
+    identTokens := filterByType(tokens, "IDENT")
+    identValues := joinValues(identTokens, ", ")
+    println("Identifier values: {identValues}")
+
+    // Second test
+    println("")
+    source2 := "x == 42 + y"
+    tokens2 := tokenize(source2)
+    println("=== Second Source ===")
+    println("Source: {source2}")
+    for tok in tokens2 {
+        println(formatToken(tok))
+    }
+}
+
+// --- Tests ---
+
+test "tokenize simple expression" {
+    tokens := tokenize("1 + 2")
+    // Initial dummy + INT + PLUS + INT + EOF = 5
+    assert tokens.len() == 5
+}
+
+test "tokenize identifier" {
+    tokens := tokenize("hello")
+    // Initial dummy + IDENT + EOF = 3
+    assert tokens.len() == 3
+}
+
+test "tokenize keyword" {
+    tokens := tokenize("fn")
+    assert tokens.len() == 3
+}
+
+test "tokenize arrow" {
+    tokens := tokenize("->")
+    assert tokens.len() == 3
+}
+
+test "tokenize comparison" {
+    tokens := tokenize("== !=")
+    assert tokens.len() == 4
+}
+
+test "character classification" {
+    assert isDigit("5")
+    assert isAlpha("a")
+    assert isWhitespace(" ")
+    assert isKeyword("fn")
+    assert isKeyword("if")
+}
+
+test "token formatting" {
+    tok := Token{typ: TokPlus, value: "+", line: 1, col: 5}
+    result := formatToken(tok)
+    assert result.contains("PLUS")
+    assert result.contains("+")
+}
+
+test "count tokens" {
+    tokens := tokenize("x + y + z")
+    plusCount := countByType(tokens, "PLUS")
+    assert plusCount == 2
+}
+
+test "filter tokens" {
+    tokens := tokenize("fn foo")
+    keywords := filterByType(tokens, "KEYWORD")
+    // Initial dummy + fn = 2
+    assert keywords.len() == 2
+}

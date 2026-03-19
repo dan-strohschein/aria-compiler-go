@@ -75,6 +75,9 @@ func (g *Generator) Generate(prog *parser.Program) string {
 		}
 	}
 
+	// Runtime helpers
+	g.write(RuntimeHelpers())
+
 	return g.buf.String()
 }
 
@@ -92,7 +95,7 @@ func (g *Generator) GenerateTest(prog *parser.Program) string {
 		return ""
 	}
 
-	testBuf.WriteString("package main\n\nimport \"testing\"\n\n")
+	testBuf.WriteString("package main\n\nimport (\n\t\"testing\"\n\t\"strings\"\n)\n\nvar _ = strings.Contains\n\n")
 	for _, decl := range prog.Decls {
 		if tb, ok := decl.(*parser.TestBlock); ok {
 			testName := sanitizeTestName(tb.Name)
@@ -179,17 +182,19 @@ func (g *Generator) newTmp() string {
 // ---------- Imports ----------
 
 func (g *Generator) writeImports(prog *parser.Program) {
-	// Always import fmt for println/interpolation
 	g.writeln("import (")
 	g.indent++
 	g.writeln(`"fmt"`)
 	g.writeln(`"os"`)
+	g.writeln(`"strings"`)
+	g.writeln(`"strconv"`)
 	g.indent--
 	g.writeln(")")
-	// Suppress unused import warnings
 	g.writeln("")
 	g.writeln("var _ = fmt.Sprintf")
 	g.writeln("var _ = os.Exit")
+	g.writeln("var _ = strings.Contains")
+	g.writeln("var _ = strconv.Itoa")
 }
 
 // ---------- Type declarations ----------
@@ -420,14 +425,30 @@ func (g *Generator) genEntryBlock(eb *parser.EntryBlock) {
 	g.writeln("func main() {")
 	g.indent++
 	g.genBlockStmts(eb.Body)
-	if eb.Body.Expr != nil {
-		g.writeIndent()
-		g.genExpr(eb.Body.Expr)
-		g.write("\n")
-	}
+	g.genTrailingExpr(eb.Body.Expr, false)
 	g.indent--
 	g.writeln("}")
 	g.writeln("")
+}
+
+// genTrailingExpr generates a block's trailing expression.
+// If needsReturn is true, wraps with "return".
+// If/match as trailing expressions in statement context are generated as statements.
+func (g *Generator) genTrailingExpr(expr parser.Expr, needsReturn bool) {
+	if expr == nil {
+		return
+	}
+	// If/match in statement context should be generated as statements, not IIFEs
+	if ifExpr, ok := expr.(*parser.IfExpr); ok && !needsReturn {
+		g.genIfStmt(ifExpr)
+		return
+	}
+	g.writeIndent()
+	if needsReturn {
+		g.write("return ")
+	}
+	g.genExpr(expr)
+	g.write("\n")
 }
 
 // ---------- Expressions ----------
@@ -487,26 +508,38 @@ func (g *Generator) genExpr(expr parser.Expr) {
 		g.genExpr(e.Operand)
 
 	case *parser.PostfixExpr:
-		// ? and ! are handled differently in statement context
+		// ? and ! postfix operators — in expression context, just emit operand
+		// (full error handling requires statement-level rewriting)
 		g.genExpr(e.Operand)
 
 	case *parser.CallExpr:
 		g.genCallExpr(e)
 
 	case *parser.MethodCallExpr:
-		g.genExpr(e.Object)
-		g.write("." + e.Method + "(")
-		for i, arg := range e.Args {
-			if i > 0 {
-				g.write(", ")
+		if g.genBuiltinMethodCall(e) {
+			// Handled as built-in
+		} else {
+			g.genExpr(e.Object)
+			g.write("." + exportField(e.Method) + "(")
+			for i, arg := range e.Args {
+				if i > 0 {
+					g.write(", ")
+				}
+				g.genExpr(arg.Value)
 			}
-			g.genExpr(arg.Value)
+			g.write(")")
 		}
-		g.write(")")
 
 	case *parser.FieldAccessExpr:
-		g.genExpr(e.Object)
-		g.write("." + exportField(e.Field))
+		// .len on strings/arrays -> len()
+		if e.Field == "len" {
+			g.write("int64(len(")
+			g.genExpr(e.Object)
+			g.write("))")
+		} else {
+			g.genExpr(e.Object)
+			g.write("." + exportField(e.Field))
+		}
 
 	case *parser.OptionalChainExpr:
 		// Simplified: just access the field
@@ -524,8 +557,17 @@ func (g *Generator) genExpr(expr parser.Expr) {
 		g.genPipeline(e)
 
 	case *parser.RangeExpr:
-		// Ranges need runtime support; for now emit a comment
-		g.write("/* range */ nil")
+		// Generate a range helper call
+		g.write("_ariaRange(")
+		g.genExpr(e.Start)
+		g.write(", ")
+		g.genExpr(e.End)
+		if e.Inclusive {
+			g.write(", true")
+		} else {
+			g.write(", false")
+		}
+		g.write(")")
 
 	case *parser.BlockExpr:
 		g.write("func() {\n")
@@ -776,8 +818,26 @@ func (g *Generator) genMatchExpr(e *parser.MatchExpr) {
 		g.genExpr(e.Subject)
 		g.write(").(type) {\n")
 
+		hasDefault := false
 		for _, arm := range e.Arms {
 			g.genMatchArm(arm, tmp, subjectType)
+			switch arm.Pattern.(type) {
+			case *parser.WildcardPattern:
+				hasDefault = true
+			case *parser.BindingPattern:
+				bp := arm.Pattern.(*parser.BindingPattern)
+				if bp.Name == "_" || !g.isVariantOf(bp.Name, subjectType) {
+					hasDefault = true
+				}
+			}
+		}
+		if !hasDefault {
+			// Add default to suppress unused variable warning
+			g.writeIndent()
+			g.write(fmt.Sprintf("default:\n"))
+			g.indent++
+			g.writeln(fmt.Sprintf("_ = %s", tmp))
+			g.indent--
 		}
 
 		g.writeIndent()
@@ -973,7 +1033,20 @@ func (g *Generator) inferExprGoType(expr parser.Expr) string {
 	case *parser.GroupExpr:
 		return g.inferExprGoType(e.Inner)
 	case *parser.CallExpr:
-		return "" // can't easily infer
+		// Check if calling a known function with a return type
+		if ident, ok := e.Func.(*parser.IdentExpr); ok {
+			// Look up function in program declarations
+			if g.program != nil {
+				for _, decl := range g.program.Decls {
+					if fn, ok := decl.(*parser.FnDecl); ok && fn.Name == ident.Name {
+						if fn.ReturnType != nil {
+							return g.goTypeExpr(fn.ReturnType)
+						}
+					}
+				}
+			}
+		}
+		return ""
 	case *parser.IdentExpr:
 		return "" // would need type env
 	default:
@@ -1006,6 +1079,10 @@ func (g *Generator) genArrayExpr(e *parser.ArrayExpr) {
 	// Infer element type from first element
 	elemType := g.inferExprGoType(e.Elements[0])
 	if elemType == "" {
+		// Try to infer from struct/variant constructors
+		elemType = g.inferConstructorType(e.Elements[0])
+	}
+	if elemType == "" {
 		elemType = "interface{}"
 	}
 	g.write("[]" + elemType + "{")
@@ -1016,6 +1093,41 @@ func (g *Generator) genArrayExpr(e *parser.ArrayExpr) {
 		g.genExpr(el)
 	}
 	g.write("}")
+}
+
+func (g *Generator) inferConstructorType(expr parser.Expr) string {
+	switch e := expr.(type) {
+	case *parser.StructExpr:
+		return e.TypeName
+	case *parser.CallExpr:
+		if ident, ok := e.Func.(*parser.IdentExpr); ok {
+			if _, ok := g.types[ident.Name]; ok {
+				return ident.Name
+			}
+			// Sum type variant
+			for _, t := range g.types {
+				if st, ok := t.(*checker.SumType); ok {
+					for _, v := range st.Variants {
+						if v.Name == ident.Name {
+							return st.Name
+						}
+					}
+				}
+			}
+		}
+	case *parser.IdentExpr:
+		// Unit variant
+		for _, t := range g.types {
+			if st, ok := t.(*checker.SumType); ok {
+				for _, v := range st.Variants {
+					if v.Name == e.Name {
+						return st.Name
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func (g *Generator) genListComp(e *parser.ListCompExpr) {
@@ -1094,9 +1206,14 @@ func (g *Generator) genStmt(stmt parser.Stmt) {
 		g.write("\n")
 
 	case *parser.ExprStmt:
-		g.writeIndent()
-		g.genExpr(s.Expr)
-		g.write("\n")
+		// If/match used as statements don't need IIFE wrapping
+		if ifExpr, ok := s.Expr.(*parser.IfExpr); ok {
+			g.genIfStmt(ifExpr)
+		} else {
+			g.writeIndent()
+			g.genExpr(s.Expr)
+			g.write("\n")
+		}
 
 	case *parser.ForStmt:
 		g.genForStmt(s)
@@ -1108,11 +1225,7 @@ func (g *Generator) genStmt(stmt parser.Stmt) {
 		g.write(" {\n")
 		g.indent++
 		g.genBlockStmts(s.Body)
-		if s.Body.Expr != nil {
-			g.writeIndent()
-			g.genExpr(s.Body.Expr)
-			g.write("\n")
-		}
+		g.genTrailingExpr(s.Body.Expr, false)
 		g.indent--
 		g.writeln("}")
 
@@ -1120,11 +1233,7 @@ func (g *Generator) genStmt(stmt parser.Stmt) {
 		g.writeln("for {")
 		g.indent++
 		g.genBlockStmts(s.Body)
-		if s.Body.Expr != nil {
-			g.writeIndent()
-			g.genExpr(s.Body.Expr)
-			g.write("\n")
-		}
+		g.genTrailingExpr(s.Body.Expr, false)
 		g.indent--
 		g.writeln("}")
 
@@ -1151,6 +1260,66 @@ func (g *Generator) genStmt(stmt parser.Stmt) {
 	}
 }
 
+func (g *Generator) genIfStmt(e *parser.IfExpr) {
+	g.writeIndent()
+	g.write("if ")
+	g.genExpr(e.Cond)
+	g.write(" {\n")
+	g.indent++
+	g.genBlockStmts(e.Then)
+	g.genTrailingExpr(e.Then.Expr, false)
+	g.indent--
+	if e.Else != nil {
+		if elseIf, ok := e.Else.(*parser.IfExpr); ok {
+			g.writeIndent()
+			g.write("} else ")
+			// Strip the indent from the recursive call
+			g.genIfStmtInline(elseIf)
+		} else if elseBlock, ok := e.Else.(*parser.BlockExpr); ok {
+			g.writeIndent()
+			g.write("} else {\n")
+			g.indent++
+			g.genBlockStmts(elseBlock)
+			g.genTrailingExpr(elseBlock.Expr, false)
+			g.indent--
+			g.writeln("}")
+		} else {
+			g.writeln("}")
+		}
+	} else {
+		g.writeln("}")
+	}
+}
+
+func (g *Generator) genIfStmtInline(e *parser.IfExpr) {
+	g.write("if ")
+	g.genExpr(e.Cond)
+	g.write(" {\n")
+	g.indent++
+	g.genBlockStmts(e.Then)
+	g.genTrailingExpr(e.Then.Expr, false)
+	g.indent--
+	if e.Else != nil {
+		if elseIf, ok := e.Else.(*parser.IfExpr); ok {
+			g.writeIndent()
+			g.write("} else ")
+			g.genIfStmtInline(elseIf)
+		} else if elseBlock, ok := e.Else.(*parser.BlockExpr); ok {
+			g.writeIndent()
+			g.write("} else {\n")
+			g.indent++
+			g.genBlockStmts(elseBlock)
+			g.genTrailingExpr(elseBlock.Expr, false)
+			g.indent--
+			g.writeln("}")
+		} else {
+			g.writeln("}")
+		}
+	} else {
+		g.writeln("}")
+	}
+}
+
 func (g *Generator) genForStmt(s *parser.ForStmt) {
 	g.writeIndent()
 	if bp, ok := s.Pattern.(*parser.BindingPattern); ok {
@@ -1162,11 +1331,7 @@ func (g *Generator) genForStmt(s *parser.ForStmt) {
 	g.write(" {\n")
 	g.indent++
 	g.genBlockStmts(s.Body)
-	if s.Body.Expr != nil {
-		g.writeIndent()
-		g.genExpr(s.Body.Expr)
-		g.write("\n")
-	}
+	g.genTrailingExpr(s.Body.Expr, false)
 	g.indent--
 	g.writeln("}")
 }
@@ -1207,6 +1372,221 @@ func (g *Generator) genTestExprStmt(expr parser.Expr) {
 	g.writeIndent()
 	g.genExpr(expr)
 	g.write("\n")
+}
+
+// ---------- Built-in method dispatch ----------
+
+// genBuiltinMethodCall handles method calls on built-in types (str, arrays, etc.)
+// Returns true if handled.
+func (g *Generator) genBuiltinMethodCall(e *parser.MethodCallExpr) bool {
+	method := e.Method
+	args := e.Args
+
+	switch method {
+	// String methods
+	case "len":
+		g.write("int64(len(")
+		g.genExpr(e.Object)
+		g.write("))")
+		return true
+	case "contains":
+		g.write("strings.Contains(")
+		g.genExpr(e.Object)
+		g.write(", ")
+		g.genExpr(args[0].Value)
+		g.write(")")
+		return true
+	case "startsWith":
+		g.write("strings.HasPrefix(")
+		g.genExpr(e.Object)
+		g.write(", ")
+		g.genExpr(args[0].Value)
+		g.write(")")
+		return true
+	case "endsWith":
+		g.write("strings.HasSuffix(")
+		g.genExpr(e.Object)
+		g.write(", ")
+		g.genExpr(args[0].Value)
+		g.write(")")
+		return true
+	case "trim":
+		g.write("strings.TrimSpace(")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+	case "split":
+		g.write("strings.Split(")
+		g.genExpr(e.Object)
+		g.write(", ")
+		g.genExpr(args[0].Value)
+		g.write(")")
+		return true
+	case "replace":
+		g.write("strings.ReplaceAll(")
+		g.genExpr(e.Object)
+		g.write(", ")
+		g.genExpr(args[0].Value)
+		g.write(", ")
+		g.genExpr(args[1].Value)
+		g.write(")")
+		return true
+	case "toLower":
+		g.write("strings.ToLower(")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+	case "toUpper":
+		g.write("strings.ToUpper(")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+	case "indexOf":
+		g.write("int64(strings.Index(")
+		g.genExpr(e.Object)
+		g.write(", ")
+		g.genExpr(args[0].Value)
+		g.write("))")
+		return true
+	case "substring":
+		g.genExpr(e.Object)
+		g.write("[")
+		g.genExpr(args[0].Value)
+		g.write(":")
+		if len(args) > 1 {
+			g.genExpr(args[1].Value)
+		}
+		g.write("]")
+		return true
+	case "charAt":
+		g.write("string(")
+		g.genExpr(e.Object)
+		g.write("[")
+		g.genExpr(args[0].Value)
+		g.write("])")
+		return true
+
+	// Collection methods
+	case "append":
+		g.write("append(")
+		g.genExpr(e.Object)
+		g.write(", ")
+		for i, arg := range args {
+			if i > 0 {
+				g.write(", ")
+			}
+			g.genExpr(arg.Value)
+		}
+		g.write(")")
+		return true
+	case "isEmpty":
+		g.write("(len(")
+		g.genExpr(e.Object)
+		g.write(") == 0)")
+		return true
+	case "first":
+		g.genExpr(e.Object)
+		g.write("[0]")
+		return true
+	case "last":
+		g.genExpr(e.Object)
+		g.write("[len(")
+		g.genExpr(e.Object)
+		g.write(")-1]")
+		return true
+	case "reverse":
+		g.write("_ariaReverse(")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+
+	// Conversion methods
+	case "toStr":
+		g.write("fmt.Sprintf(\"%v\", ")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+	case "parseInt":
+		g.write("_ariaParseInt(")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+	case "parseFloat":
+		g.write("_ariaParseFloat(")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+
+	default:
+		return false
+	}
+}
+
+// ---------- Runtime helpers ----------
+
+// RuntimeHelpers returns Go helper functions embedded in the generated code.
+func RuntimeHelpers() string {
+	return `
+// --- Aria runtime helpers ---
+
+func _ariaRange(start, end int64, inclusive bool) []int64 {
+	var result []int64
+	if inclusive {
+		for i := start; i <= end; i++ {
+			result = append(result, i)
+		}
+	} else {
+		for i := start; i < end; i++ {
+			result = append(result, i)
+		}
+	}
+	return result
+}
+
+func _ariaReverse[T any](s []T) []T {
+	result := make([]T, len(s))
+	for i, v := range s {
+		result[len(s)-1-i] = v
+	}
+	return result
+}
+
+func _ariaParseInt(s string) int64 {
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		panic(fmt.Sprintf("parseInt failed: %s", s))
+	}
+	return v
+}
+
+func _ariaParseFloat(s string) float64 {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		panic(fmt.Sprintf("parseFloat failed: %s", s))
+	}
+	return v
+}
+
+func _ariaReadFile(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		panic(fmt.Sprintf("readFile failed: %v", err))
+	}
+	return string(data)
+}
+
+func _ariaWriteFile(path string, content string) {
+	err := os.WriteFile(path, []byte(content), 0644)
+	if err != nil {
+		panic(fmt.Sprintf("writeFile failed: %v", err))
+	}
+}
+
+func _ariaFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+`
 }
 
 // ---------- Type mapping ----------

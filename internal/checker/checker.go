@@ -434,8 +434,8 @@ func (c *Checker) checkExpr(expr parser.Expr) Type {
 		for _, arg := range e.Args {
 			c.checkExpr(arg.Value)
 		}
-		// Method return types require full trait resolution
-		return &UnresolvedType{Name: e.Method}
+		// Infer return types for known built-in methods
+		return c.inferMethodReturnType(e.Method)
 
 	case *parser.FieldAccessExpr:
 		objType := c.checkExpr(e.Object)
@@ -570,17 +570,28 @@ func (c *Checker) checkBinaryExpr(e *parser.BinaryExpr) Type {
 	leftType := c.checkExpr(e.Left)
 	rightType := c.checkExpr(e.Right)
 
-	// Skip type checking if either side is unresolved
+	leftUnresolved := false
+	rightUnresolved := false
 	if _, ok := leftType.(*UnresolvedType); ok {
-		return leftType
+		leftUnresolved = true
 	}
 	if _, ok := rightType.(*UnresolvedType); ok {
-		return rightType
+		rightUnresolved = true
 	}
 
 	switch e.Op {
-	// Arithmetic operators: both sides must be same numeric type
+	// Arithmetic operators: both sides must be same numeric type (or str for +)
 	case lexer.Plus, lexer.Minus, lexer.Star, lexer.Slash, lexer.Percent:
+		if leftUnresolved || rightUnresolved {
+			if !leftUnresolved {
+				return leftType
+			}
+			return rightType
+		}
+		// + is also string concatenation
+		if e.Op == lexer.Plus && IsAssignable(leftType, TypeStr) {
+			return TypeStr
+		}
 		if !IsNumericType(leftType) {
 			c.error(e.Pos, diagnostic.E0100,
 				fmt.Sprintf("operator %s requires numeric type, got %s", e.Op, leftType))
@@ -592,29 +603,35 @@ func (c *Checker) checkBinaryExpr(e *parser.BinaryExpr) Type {
 		}
 		return leftType
 
-	// Comparison operators: both sides same type, result is bool
+	// Comparison operators: always return bool regardless of operand types
 	case lexer.EqEq, lexer.BangEq, lexer.Lt, lexer.Gt, lexer.LtEq, lexer.GtEq:
-		if !IsAssignable(leftType, rightType) {
-			c.error(e.Pos, diagnostic.E0100,
-				fmt.Sprintf("cannot compare %s with %s", leftType, rightType))
+		if !leftUnresolved && !rightUnresolved {
+			if !IsAssignable(leftType, rightType) {
+				c.error(e.Pos, diagnostic.E0100,
+					fmt.Sprintf("cannot compare %s with %s", leftType, rightType))
+			}
 		}
 		return TypeBool
 
-	// Logical operators: both sides must be bool
+	// Logical operators: always return bool
 	case lexer.AmpAmp, lexer.PipePipe:
-		if !IsAssignable(leftType, TypeBool) {
-			c.error(e.Pos, diagnostic.E0100,
-				fmt.Sprintf("operator %s requires bool, got %s", e.Op, leftType))
+		if !leftUnresolved {
+			if !IsAssignable(leftType, TypeBool) {
+				c.error(e.Pos, diagnostic.E0100,
+					fmt.Sprintf("operator %s requires bool, got %s", e.Op, leftType))
+			}
 		}
-		if !IsAssignable(rightType, TypeBool) {
-			c.error(e.Pos, diagnostic.E0100,
-				fmt.Sprintf("operator %s requires bool, got %s", e.Op, rightType))
+		if !rightUnresolved {
+			if !IsAssignable(rightType, TypeBool) {
+				c.error(e.Pos, diagnostic.E0100,
+					fmt.Sprintf("operator %s requires bool, got %s", e.Op, rightType))
+			}
 		}
 		return TypeBool
 
 	// Bitwise operators: integer types
 	case lexer.Amp, lexer.Pipe, lexer.Caret, lexer.LtLt, lexer.GtGt:
-		if !IsIntegerType(leftType) {
+		if !leftUnresolved && !IsIntegerType(leftType) {
 			c.error(e.Pos, diagnostic.E0100,
 				fmt.Sprintf("bitwise operator requires integer type, got %s", leftType))
 		}
@@ -1186,6 +1203,35 @@ func (c *Checker) collectCoveredVariants(pat parser.Pattern, covered map[string]
 		c.collectCoveredVariants(p.Right, covered, hasWildcard)
 	case *parser.StructPattern:
 		covered[p.TypeName] = true
+	}
+}
+
+// ---------- Method return type inference ----------
+
+func (c *Checker) inferMethodReturnType(method string) Type {
+	switch method {
+	// String methods returning str
+	case "trim", "toLower", "toUpper", "replace", "charAt", "substring", "toStr":
+		return TypeStr
+	// String methods returning i64
+	case "len", "indexOf":
+		return TypeI64
+	// String methods returning bool
+	case "contains", "startsWith", "endsWith", "isEmpty":
+		return TypeBool
+	// String methods returning [str]
+	case "split":
+		return &ArrayType{Element: TypeStr}
+	// Collection methods
+	case "first", "last":
+		return &UnresolvedType{Name: method}
+	// Conversion methods
+	case "parseInt":
+		return TypeI64
+	case "parseFloat":
+		return TypeF64
+	default:
+		return &UnresolvedType{Name: method}
 	}
 }
 

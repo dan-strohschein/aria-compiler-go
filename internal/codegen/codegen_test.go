@@ -130,6 +130,27 @@ const F = fn(x: i64) => x * 2`)
 	}
 }
 
+func TestGenNestedIfElse(t *testing.T) {
+	src := generate(`mod main
+entry {
+    c := "x"
+    if c == "+" {
+        println("plus")
+    } else if c == "-" {
+        next := 5
+        if next < 10 {
+            println("has next")
+        } else {
+            println("no next")
+        }
+    } else {
+        println("other")
+    }
+}`)
+	fmt.Println("=== Nested if/else ===")
+	fmt.Println(src)
+}
+
 func TestGenFnTypeParam(t *testing.T) {
 	src := generate(`mod main
 fn apply(x: i64, f: fn(i64) -> i64) -> i64 = f(x)
