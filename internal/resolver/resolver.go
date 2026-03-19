@@ -44,21 +44,33 @@ func defaultModules() map[string][]string {
 	}
 }
 
-// Resolve performs name resolution on the program.
+// Resolve performs name resolution on a single program.
 func (r *Resolver) Resolve(prog *parser.Program) *Scope {
+	return r.ResolveMulti([]*parser.Program{prog})
+}
+
+// ResolveMulti performs name resolution across multiple programs (files).
+// All top-level declarations from all files are visible to all files.
+func (r *Resolver) ResolveMulti(progs []*parser.Program) *Scope {
 	// Create module scope under universe
 	r.module = NewScope(ModuleScope, r.universe)
 	r.current = r.module
 
-	// Phase 1: Register all top-level declarations (forward references)
-	r.registerTopLevel(prog)
+	// Phase 1: Register all top-level declarations from ALL files
+	for _, prog := range progs {
+		r.registerTopLevel(prog)
+	}
 
-	// Phase 2: Resolve imports
-	r.resolveImports(prog)
+	// Phase 2: Resolve imports from all files
+	for _, prog := range progs {
+		r.resolveImports(prog)
+	}
 
-	// Phase 3: Resolve all declaration bodies
-	for _, decl := range prog.Decls {
-		r.resolveDecl(decl)
+	// Phase 3: Resolve all declaration bodies from all files
+	for _, prog := range progs {
+		for _, decl := range prog.Decls {
+			r.resolveDecl(decl)
+		}
 	}
 
 	return r.module

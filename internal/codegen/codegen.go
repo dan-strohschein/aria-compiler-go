@@ -25,6 +25,13 @@ func New() *Generator {
 	}
 }
 
+// NewWithTypes creates a generator that shares type info from other files.
+func NewWithTypes(types map[string]checker.Type) *Generator {
+	return &Generator{
+		types: types,
+	}
+}
+
 // Generate produces Go source from an Aria program.
 func (g *Generator) Generate(prog *parser.Program) string {
 	g.program = prog
@@ -81,6 +88,58 @@ func (g *Generator) Generate(prog *parser.Program) string {
 	return g.buf.String()
 }
 
+// GenerateModule produces Go source for a non-main module file.
+// It outputs package main + imports + declarations (no runtime helpers, no entry).
+func (g *Generator) GenerateModule(prog *parser.Program) string {
+	g.program = prog
+	g.registerTypes(prog)
+
+	g.writeln("package main")
+	g.writeln("")
+	g.writeImports(prog)
+	g.writeln("")
+
+	// Type declarations
+	for _, decl := range prog.Decls {
+		switch d := decl.(type) {
+		case *parser.TypeDecl:
+			g.genTypeDecl(d)
+		case *parser.EnumDecl:
+			g.genEnumDecl(d)
+		case *parser.AliasDecl:
+			g.genAliasDecl(d)
+		}
+	}
+
+	// Impl blocks
+	for _, decl := range prog.Decls {
+		if impl, ok := decl.(*parser.ImplDecl); ok {
+			g.genImplDecl(impl)
+		}
+	}
+
+	// Functions (but not entry or test blocks)
+	for _, decl := range prog.Decls {
+		if fn, ok := decl.(*parser.FnDecl); ok {
+			g.genFnDecl(fn)
+		}
+	}
+
+	// Constants
+	for _, decl := range prog.Decls {
+		if cd, ok := decl.(*parser.ConstDecl); ok {
+			g.genConstDecl(cd)
+		}
+	}
+
+	return g.buf.String()
+}
+
+// GetTypes returns the registered type map for sharing across generators.
+func (g *Generator) GetTypes() map[string]checker.Type {
+	return g.types
+}
+
 // GenerateTest produces Go test source from test blocks.
 func (g *Generator) GenerateTest(prog *parser.Program) string {
 	var testBuf strings.Builder
@@ -128,6 +187,12 @@ func sanitizeTestName(name string) string {
 		}
 	}
 	return sb.String()
+}
+
+// RegisterProgramTypes registers all type declarations from a program
+// into the generator's type map. Used for multi-file compilation.
+func (g *Generator) RegisterProgramTypes(prog *parser.Program) {
+	g.registerTypes(prog)
 }
 
 func (g *Generator) registerTypes(prog *parser.Program) {

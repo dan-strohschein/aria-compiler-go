@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/aria-lang/aria/internal/checker"
 	"github.com/aria-lang/aria/internal/codegen"
@@ -50,7 +52,6 @@ func main() {
 			os.Exit(0)
 		default:
 			if cmdArgs[i][0] == '-' {
-				// Check for --format=value pattern
 				if len(cmdArgs[i]) > 9 && cmdArgs[i][:9] == "--format=" {
 					format = cmdArgs[i][9:]
 				} else {
@@ -90,7 +91,7 @@ func main() {
 func printUsage() {
 	fmt.Printf(`aria %s — the Aria bootstrap compiler
 
-Usage: aria <command> [flags] [files...]
+Usage: aria <command> [flags] [files/directories...]
 
 Commands:
   lex       Tokenize source files and dump token stream
@@ -99,6 +100,11 @@ Commands:
   build     Compile source files to executable
   run       Compile and run source files
   test      Compile and run test blocks
+
+Multi-file: Pass a directory or multiple .aria files to compile together.
+  aria build .                  # compile all .aria files in current dir
+  aria build src/               # compile all .aria files in src/
+  aria run main.aria lib.aria   # compile specific files together
 
 Flags:
   --format=text|json   Output format (default: text)
@@ -109,11 +115,56 @@ Flags:
 
 func requireFiles(files []string, cmd string) {
 	if len(files) == 0 {
-		fmt.Fprintf(os.Stderr, "error: %s requires at least one source file\n", cmd)
-		fmt.Fprintf(os.Stderr, "usage: aria %s [flags] <file.aria>\n", cmd)
+		fmt.Fprintf(os.Stderr, "error: %s requires at least one source file or directory\n", cmd)
+		fmt.Fprintf(os.Stderr, "usage: aria %s [flags] <file.aria | directory>\n", cmd)
 		os.Exit(1)
 	}
 }
+
+// discoverAriaFiles expands file arguments into a list of .aria files.
+// If a directory is given, all .aria files in that directory are included.
+// If a single .aria file is given and other .aria files exist in the same
+// directory, they are all included for multi-file compilation.
+func discoverAriaFiles(inputs []string) []string {
+	var files []string
+	seen := make(map[string]bool)
+
+	for _, input := range inputs {
+		info, err := os.Stat(input)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot access %q: %v\n", input, err)
+			os.Exit(1)
+		}
+
+		if info.IsDir() {
+			// Directory: find all .aria files
+			entries, _ := os.ReadDir(input)
+			for _, e := range entries {
+				if !e.IsDir() && strings.HasSuffix(e.Name(), ".aria") {
+					path := filepath.Join(input, e.Name())
+					if !seen[path] {
+						files = append(files, path)
+						seen[path] = true
+					}
+				}
+			}
+		} else if strings.HasSuffix(input, ".aria") {
+			absPath, _ := filepath.Abs(input)
+			if !seen[absPath] {
+				files = append(files, input)
+				seen[absPath] = true
+			}
+		}
+	}
+
+	if len(files) == 0 {
+		fmt.Fprintln(os.Stderr, "error: no .aria files found")
+		os.Exit(1)
+	}
+	return files
+}
+
+// ---------- Single-file commands ----------
 
 func runLex(files []string, format string) {
 	requireFiles(files, "lex")
@@ -202,8 +253,21 @@ func runParse(files []string, format string) {
 	}
 }
 
-func runCheck(files []string, format string) {
-	requireFiles(files, "check")
+// ---------- Multi-file pipeline ----------
+
+// parsedFile holds the parse result for one .aria file.
+type parsedFile struct {
+	path string
+	prog *parser.Program
+}
+
+// compileProject runs the full multi-file pipeline.
+// Returns Go source files for all Aria files.
+func compileProject(inputs []string, format string) ([]codegen.GoFile, []codegen.GoFile) {
+	files := discoverAriaFiles(inputs)
+
+	// Phase 1: Parse all files
+	var parsed []parsedFile
 	hasErrors := false
 	for _, file := range files {
 		source, err := os.ReadFile(file)
@@ -223,125 +287,192 @@ func runCheck(files []string, format string) {
 		p := parser.New(tokens)
 		prog := p.Parse()
 		if p.Diagnostics().HasErrors() {
-			if format == "json" {
-				p.Diagnostics().RenderJSON(os.Stderr)
-			} else {
-				p.Diagnostics().Render(os.Stderr)
-			}
+			p.Diagnostics().Render(os.Stderr)
 			hasErrors = true
 			continue
 		}
 
-		r := resolver.New()
-		scope := r.Resolve(prog)
-		if r.Diagnostics().HasErrors() {
-			if format == "json" {
-				r.Diagnostics().RenderJSON(os.Stderr)
-			} else {
-				r.Diagnostics().Render(os.Stderr)
-			}
-			hasErrors = true
-			continue
-		}
-
-		ch := checker.New(scope)
-		ch.Check(prog)
-		if ch.Diagnostics().HasErrors() {
-			if format == "json" {
-				ch.Diagnostics().RenderJSON(os.Stderr)
-			} else {
-				ch.Diagnostics().Render(os.Stderr)
-			}
-			hasErrors = true
-			continue
-		}
-
-		fmt.Printf("%s: OK\n", file)
+		parsed = append(parsed, parsedFile{path: file, prog: prog})
 	}
 	if hasErrors {
 		os.Exit(1)
 	}
-}
 
-// compileToGo runs the full pipeline (lex → parse → resolve → check → codegen)
-// and returns the generated Go source code.
-func compileToGo(file string, format string) (string, string, error) {
-	source, err := os.ReadFile(file)
-	if err != nil {
-		return "", "", fmt.Errorf("cannot read file %q: %v", file, err)
-	}
-
-	l := lexer.New(file, string(source))
-	tokens := l.Tokenize()
-	if l.Diagnostics().HasErrors() {
-		if format == "json" {
-			l.Diagnostics().RenderJSON(os.Stderr)
-		} else {
-			l.Diagnostics().Render(os.Stderr)
-		}
-		return "", "", fmt.Errorf("lexer errors")
-	}
-
-	p := parser.New(tokens)
-	prog := p.Parse()
-	if p.Diagnostics().HasErrors() {
-		if format == "json" {
-			p.Diagnostics().RenderJSON(os.Stderr)
-		} else {
-			p.Diagnostics().Render(os.Stderr)
-		}
-		return "", "", fmt.Errorf("parse errors")
-	}
-
+	// Phase 2: Resolve all files together.
+	// First pass: register top-level declarations from ALL files.
 	r := resolver.New()
-	scope := r.Resolve(prog)
+	allProgs := make([]*parser.Program, len(parsed))
+	for i, pf := range parsed {
+		allProgs[i] = pf.prog
+	}
+	scope := r.ResolveMulti(allProgs)
 	if r.Diagnostics().HasErrors() {
-		if format == "json" {
-			r.Diagnostics().RenderJSON(os.Stderr)
-		} else {
-			r.Diagnostics().Render(os.Stderr)
-		}
-		return "", "", fmt.Errorf("resolution errors")
-	}
-
-	ch := checker.New(scope)
-	ch.Check(prog)
-	if ch.Diagnostics().HasErrors() {
-		if format == "json" {
-			ch.Diagnostics().RenderJSON(os.Stderr)
-		} else {
-			ch.Diagnostics().Render(os.Stderr)
-		}
-		return "", "", fmt.Errorf("type errors")
-	}
-
-	gen := codegen.New()
-	goSrc := gen.Generate(prog)
-	testSrc := gen.GenerateTest(prog)
-	return goSrc, testSrc, nil
-}
-
-func runBuild(files []string, format string) {
-	requireFiles(files, "build")
-
-	goSrc, _, err := compileToGo(files[0], format)
-	if err != nil {
+		r.Diagnostics().Render(os.Stderr)
 		os.Exit(1)
 	}
 
-	// Determine output name from input file
-	base := files[0]
-	base = base[:len(base)-len(".aria")]
-	if idx := len(base) - 1; idx >= 0 {
-		for i := idx; i >= 0; i-- {
-			if base[i] == '/' || base[i] == '\\' {
-				base = base[i+1:]
+	// Phase 3: Type-check all files together.
+	ch := checker.New(scope)
+	for _, pf := range parsed {
+		ch.Check(pf.prog)
+	}
+	if ch.Diagnostics().HasErrors() {
+		ch.Diagnostics().Render(os.Stderr)
+		os.Exit(1)
+	}
+
+	// Phase 4: Generate Go source.
+	// Find which file has the entry block — that becomes main.go.
+	// Other files become module_name.go.
+	var goFiles []codegen.GoFile
+	var testFiles []codegen.GoFile
+
+	// First pass: collect all types across files
+	typeCollector := codegen.New()
+	for _, pf := range parsed {
+		typeCollector.RegisterProgramTypes(pf.prog)
+	}
+	sharedTypes := typeCollector.GetTypes()
+
+	entryFound := false
+	for _, pf := range parsed {
+		hasEntry := false
+		for _, decl := range pf.prog.Decls {
+			if _, ok := decl.(*parser.EntryBlock); ok {
+				hasEntry = true
 				break
+			}
+		}
+
+		goName := ariaToGoFilename(pf.path)
+
+		if hasEntry {
+			entryFound = true
+			gen := codegen.NewWithTypes(sharedTypes)
+			goSrc := gen.Generate(pf.prog)
+			goFiles = append(goFiles, codegen.GoFile{Name: goName, Source: goSrc})
+
+			testSrc := gen.GenerateTest(pf.prog)
+			if testSrc != "" {
+				testName := strings.TrimSuffix(goName, ".go") + "_test.go"
+				testFiles = append(testFiles, codegen.GoFile{Name: testName, Source: testSrc})
+			}
+		} else {
+			gen := codegen.NewWithTypes(sharedTypes)
+			goSrc := gen.GenerateModule(pf.prog)
+			goFiles = append(goFiles, codegen.GoFile{Name: goName, Source: goSrc})
+
+			testSrc := gen.GenerateTest(pf.prog)
+			if testSrc != "" {
+				testName := strings.TrimSuffix(goName, ".go") + "_test.go"
+				testFiles = append(testFiles, codegen.GoFile{Name: testName, Source: testSrc})
 			}
 		}
 	}
 
-	result, err := codegen.Build(goSrc, "", codegen.BuildOptions{
+	if !entryFound && len(parsed) > 0 {
+		// If no entry block, generate an empty main
+		goFiles = append(goFiles, codegen.GoFile{
+			Name:   "aria_main.go",
+			Source: "package main\n\nfunc main() {}\n",
+		})
+	}
+
+	return goFiles, testFiles
+}
+
+func ariaToGoFilename(ariaPath string) string {
+	base := filepath.Base(ariaPath)
+	name := strings.TrimSuffix(base, ".aria")
+	// Sanitize: replace non-alphanumeric with underscore
+	var sb strings.Builder
+	for _, c := range name {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+			sb.WriteRune(c)
+		} else {
+			sb.WriteRune('_')
+		}
+	}
+	return sb.String() + ".go"
+}
+
+// ---------- Commands ----------
+
+func runCheck(files []string, format string) {
+	requireFiles(files, "check")
+	allFiles := discoverAriaFiles(files)
+
+	// Parse all files
+	var progs []*parser.Program
+	hasErrors := false
+	for _, file := range allFiles {
+		source, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot read file %q: %v\n", file, err)
+			os.Exit(1)
+		}
+
+		l := lexer.New(file, string(source))
+		tokens := l.Tokenize()
+		if l.Diagnostics().HasErrors() {
+			l.Diagnostics().Render(os.Stderr)
+			hasErrors = true
+			continue
+		}
+
+		p := parser.New(tokens)
+		prog := p.Parse()
+		if p.Diagnostics().HasErrors() {
+			p.Diagnostics().Render(os.Stderr)
+			hasErrors = true
+			continue
+		}
+		progs = append(progs, prog)
+	}
+	if hasErrors {
+		os.Exit(1)
+	}
+
+	// Resolve all together
+	r := resolver.New()
+	scope := r.ResolveMulti(progs)
+	if r.Diagnostics().HasErrors() {
+		r.Diagnostics().Render(os.Stderr)
+		os.Exit(1)
+	}
+
+	// Check all together
+	ch := checker.New(scope)
+	for _, prog := range progs {
+		ch.Check(prog)
+	}
+	if ch.Diagnostics().HasErrors() {
+		ch.Diagnostics().Render(os.Stderr)
+		os.Exit(1)
+	}
+
+	for _, f := range allFiles {
+		fmt.Printf("%s: OK\n", f)
+	}
+}
+
+func runBuild(files []string, format string) {
+	requireFiles(files, "build")
+	goFiles, _, err := compileProjectWrapper(files, format)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	base := "aria_output"
+	if len(files) > 0 {
+		b := filepath.Base(files[0])
+		b = strings.TrimSuffix(b, ".aria")
+		if b != "." && b != "" {
+			base = b
+		}
+	}
+
+	result, err := codegen.BuildMulti(goFiles, nil, codegen.BuildOptions{
 		OutputPath: base,
 	})
 	if err != nil {
@@ -353,13 +484,12 @@ func runBuild(files []string, format string) {
 
 func runRun(files []string, format string) {
 	requireFiles(files, "run")
-
-	goSrc, _, err := compileToGo(files[0], format)
+	goFiles, _, err := compileProjectWrapper(files, format)
 	if err != nil {
 		os.Exit(1)
 	}
 
-	exitCode, err := codegen.Run(goSrc, nil)
+	exitCode, err := codegen.RunMulti(goFiles, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -369,20 +499,24 @@ func runRun(files []string, format string) {
 
 func runTest(files []string, format string) {
 	requireFiles(files, "test")
-
-	goSrc, testSrc, err := compileToGo(files[0], format)
+	goFiles, testFiles, err := compileProjectWrapper(files, format)
 	if err != nil {
 		os.Exit(1)
 	}
 
-	if testSrc == "" {
+	if len(testFiles) == 0 {
 		fmt.Println("no tests found")
 		return
 	}
 
-	output, err := codegen.RunTests(goSrc, testSrc)
+	output, err := codegen.RunTestsMulti(goFiles, testFiles)
 	fmt.Print(output)
 	if err != nil {
 		os.Exit(1)
 	}
+}
+
+func compileProjectWrapper(inputs []string, format string) ([]codegen.GoFile, []codegen.GoFile, error) {
+	goFiles, testFiles := compileProject(inputs, format)
+	return goFiles, testFiles, nil
 }

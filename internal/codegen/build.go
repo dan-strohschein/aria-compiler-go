@@ -21,9 +21,14 @@ type BuildOptions struct {
 	Verbose       bool
 }
 
-// Build generates Go source, compiles it, and produces a binary.
-func Build(goSource string, testSource string, opts BuildOptions) (*BuildResult, error) {
-	// Create temp directory for generated Go project
+// GoFile represents a generated Go source file.
+type GoFile struct {
+	Name   string // e.g., "main.go", "lexer.go"
+	Source string // Go source code
+}
+
+// BuildMulti compiles multiple Go source files into a single binary.
+func BuildMulti(goFiles []GoFile, testFiles []GoFile, opts BuildOptions) (*BuildResult, error) {
 	tmpDir, err := os.MkdirTemp("", "aria-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
@@ -39,24 +44,22 @@ func Build(goSource string, testSource string, opts BuildOptions) (*BuildResult,
 		return nil, fmt.Errorf("failed to write go.mod: %w", err)
 	}
 
-	// Write main.go
-	mainPath := filepath.Join(tmpDir, "main.go")
-	if err := os.WriteFile(mainPath, []byte(goSource), 0644); err != nil {
-		return nil, fmt.Errorf("failed to write main.go: %w", err)
+	// Write all Go source files
+	for _, gf := range goFiles {
+		path := filepath.Join(tmpDir, gf.Name)
+		if err := os.WriteFile(path, []byte(gf.Source), 0644); err != nil {
+			return nil, fmt.Errorf("failed to write %s: %w", gf.Name, err)
+		}
+		exec.Command("gofmt", "-w", path).Run()
 	}
 
-	// Optionally format the generated Go source
-	fmtCmd := exec.Command("gofmt", "-w", mainPath)
-	fmtCmd.Run() // ignore errors; formatting is best-effort
-
-	// Write test file if present
-	if testSource != "" {
-		testPath := filepath.Join(tmpDir, "main_test.go")
-		if err := os.WriteFile(testPath, []byte(testSource), 0644); err != nil {
-			return nil, fmt.Errorf("failed to write test file: %w", err)
+	// Write test files
+	for _, tf := range testFiles {
+		path := filepath.Join(tmpDir, tf.Name)
+		if err := os.WriteFile(path, []byte(tf.Source), 0644); err != nil {
+			return nil, fmt.Errorf("failed to write %s: %w", tf.Name, err)
 		}
-		fmtCmd := exec.Command("gofmt", "-w", testPath)
-		fmtCmd.Run()
+		exec.Command("gofmt", "-w", path).Run()
 	}
 
 	// Determine output path
@@ -86,8 +89,18 @@ func Build(goSource string, testSource string, opts BuildOptions) (*BuildResult,
 	return result, nil
 }
 
-// Run generates Go source, compiles, executes, and cleans up.
-func Run(goSource string, args []string) (int, error) {
+// Build is the single-file convenience wrapper.
+func Build(goSource string, testSource string, opts BuildOptions) (*BuildResult, error) {
+	goFiles := []GoFile{{Name: "main.go", Source: goSource}}
+	var testFiles []GoFile
+	if testSource != "" {
+		testFiles = []GoFile{{Name: "main_test.go", Source: testSource}}
+	}
+	return BuildMulti(goFiles, testFiles, opts)
+}
+
+// RunMulti compiles multiple Go source files and executes the result.
+func RunMulti(goFiles []GoFile, args []string) (int, error) {
 	tmpDir, err := os.MkdirTemp("", "aria-run-*")
 	if err != nil {
 		return 1, fmt.Errorf("failed to create temp dir: %w", err)
@@ -96,9 +109,12 @@ func Run(goSource string, args []string) (int, error) {
 
 	goMod := "module aria_generated\n\ngo 1.21\n"
 	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0644)
-	mainPath := filepath.Join(tmpDir, "main.go")
-	os.WriteFile(mainPath, []byte(goSource), 0644)
-	exec.Command("gofmt", "-w", mainPath).Run()
+
+	for _, gf := range goFiles {
+		path := filepath.Join(tmpDir, gf.Name)
+		os.WriteFile(path, []byte(gf.Source), 0644)
+		exec.Command("gofmt", "-w", path).Run()
+	}
 
 	binaryPath := filepath.Join(tmpDir, "aria_run")
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, ".")
@@ -110,7 +126,6 @@ func Run(goSource string, args []string) (int, error) {
 		return 1, fmt.Errorf("compilation failed:\n%s", string(output))
 	}
 
-	// Execute the binary
 	runCmd := exec.Command(binaryPath)
 	runCmd.Args = append(runCmd.Args, args...)
 	runCmd.Stdout = os.Stdout
@@ -127,8 +142,13 @@ func Run(goSource string, args []string) (int, error) {
 	return 0, nil
 }
 
-// RunTests generates Go source with test functions, runs `go test`.
-func RunTests(goSource string, testSource string) (string, error) {
+// Run is the single-file convenience wrapper.
+func Run(goSource string, args []string) (int, error) {
+	return RunMulti([]GoFile{{Name: "main.go", Source: goSource}}, args)
+}
+
+// RunTestsMulti compiles multiple Go source files with tests and runs them.
+func RunTestsMulti(goFiles []GoFile, testFiles []GoFile) (string, error) {
 	tmpDir, err := os.MkdirTemp("", "aria-test-*")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
@@ -137,26 +157,37 @@ func RunTests(goSource string, testSource string) (string, error) {
 
 	goMod := "module aria_generated\n\ngo 1.21\n"
 	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0644)
-	mainPath := filepath.Join(tmpDir, "main.go")
-	os.WriteFile(mainPath, []byte(goSource), 0644)
-	exec.Command("gofmt", "-w", mainPath).Run()
 
-	if testSource != "" {
-		testPath := filepath.Join(tmpDir, "main_test.go")
-		os.WriteFile(testPath, []byte(testSource), 0644)
-		exec.Command("gofmt", "-w", testPath).Run()
+	for _, gf := range goFiles {
+		path := filepath.Join(tmpDir, gf.Name)
+		os.WriteFile(path, []byte(gf.Source), 0644)
+		exec.Command("gofmt", "-w", path).Run()
+	}
+	for _, tf := range testFiles {
+		path := filepath.Join(tmpDir, tf.Name)
+		os.WriteFile(path, []byte(tf.Source), 0644)
+		exec.Command("gofmt", "-w", path).Run()
 	}
 
 	testCmd := exec.Command("go", "test", "-v", ".")
 	testCmd.Dir = tmpDir
 	output, err := testCmd.CombinedOutput()
 
-	// Parse Go test output and reformat for Aria
 	result := formatTestOutput(string(output))
 	if err != nil {
 		return result, fmt.Errorf("tests failed")
 	}
 	return result, nil
+}
+
+// RunTests is the single-file convenience wrapper.
+func RunTests(goSource string, testSource string) (string, error) {
+	goFiles := []GoFile{{Name: "main.go", Source: goSource}}
+	var testFiles []GoFile
+	if testSource != "" {
+		testFiles = []GoFile{{Name: "main_test.go", Source: testSource}}
+	}
+	return RunTestsMulti(goFiles, testFiles)
 }
 
 func formatTestOutput(goOutput string) string {
@@ -180,7 +211,6 @@ func formatTestOutput(goOutput string) string {
 }
 
 func extractTestName(line string) string {
-	// "--- PASS: TestCircleArea (0.00s)" -> "circle area"
 	parts := strings.SplitN(line, ":", 2)
 	if len(parts) < 2 {
 		return line
@@ -189,9 +219,7 @@ func extractTestName(line string) string {
 	if idx := strings.Index(name, " ("); idx != -1 {
 		name = name[:idx]
 	}
-	// Remove "Test" prefix and convert to readable
 	name = strings.TrimPrefix(name, "Test")
-	// Convert CamelCase to spaces
 	var sb strings.Builder
 	for i, c := range name {
 		if i > 0 && c >= 'A' && c <= 'Z' {
