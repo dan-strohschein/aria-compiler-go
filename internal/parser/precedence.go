@@ -378,20 +378,54 @@ func (p *Parser) parseIdentOrStructExpr() Expr {
 	name := p.advance() // consume ident
 
 	// Check for struct literal: Name { field: value }
-	// Only treat as struct literal if the name starts with uppercase (type names)
-	// and it's followed by { on the same line.
-	// This avoids misinterpreting block bodies as struct literals (e.g., `items { ... }` in for loops).
+	// Struct literal: Name { field: value, ... }
+	// Only treat as struct literal if:
+	// 1. Name starts with uppercase (type name)
+	// 2. The { is followed by ident: (field initializer pattern) or }
+	// This avoids misinterpreting blocks as struct literals (e.g., `Red { return true }`)
 	if p.check(lexer.LBrace) && len(name.Literal) > 0 && name.Literal[0] >= 'A' && name.Literal[0] <= 'Z' {
-		p.advance() // consume {
-		p.skipNewlines()
-		fields := p.parseFieldInitList()
-		p.expect(lexer.RBrace)
-		return &StructExpr{TypeName: name.Literal, Fields: fields, Pos: pos}
+		if p.looksLikeStructLiteral() {
+			p.advance() // consume {
+			p.skipNewlines()
+			fields := p.parseFieldInitList()
+			p.expect(lexer.RBrace)
+			return &StructExpr{TypeName: name.Literal, Fields: fields, Pos: pos}
+		}
 	}
 
 	// Don't build PathExpr here — let the Pratt loop handle '.' as postfix access.
 	// This ensures `point.x` becomes FieldAccessExpr and `obj.method()` becomes MethodCallExpr.
 	return &IdentExpr{Name: name.Literal, Pos: pos}
+}
+
+// looksLikeStructLiteral peeks inside { to check if it contains field: value patterns.
+// Returns true if { is followed by } (empty struct) or ident: (field initializer).
+func (p *Parser) looksLikeStructLiteral() bool {
+	// Save position and look ahead
+	savedPos := p.pos
+	p.advance() // consume {
+
+	// Skip newlines inside
+	for p.check(lexer.Newline) {
+		p.advance()
+	}
+
+	// Empty struct: {}
+	if p.check(lexer.RBrace) {
+		p.pos = savedPos
+		return true
+	}
+
+	// Check for ident: pattern (field initializer)
+	if p.check(lexer.Ident) {
+		p.advance() // consume ident
+		isStruct := p.check(lexer.Colon) || p.check(lexer.Comma) || p.check(lexer.RBrace)
+		p.pos = savedPos
+		return isStruct
+	}
+
+	p.pos = savedPos
+	return false
 }
 
 func (p *Parser) parseParenOrTuple() Expr {

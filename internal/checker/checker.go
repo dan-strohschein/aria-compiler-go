@@ -271,7 +271,9 @@ func (c *Checker) checkFnDecl(fn *parser.FnDecl) {
 
 	if fn.Body != nil {
 		bodyType := c.checkExpr(fn.Body)
-		if bodyType != nil && ft.Return != nil {
+		// Skip return type check if body has explicit return statements
+		hasExplicitReturn := containsReturn(fn.Body)
+		if bodyType != nil && ft.Return != nil && !hasExplicitReturn {
 			if !IsAssignable(bodyType, ft.Return) {
 				c.error(fn.Pos, diagnostic.E0106,
 					fmt.Sprintf("function '%s' return type mismatch: expected %s, got %s",
@@ -1206,6 +1208,52 @@ func (c *Checker) collectCoveredVariants(pat parser.Pattern, covered map[string]
 	}
 }
 
+// ---------- Return statement detection ----------
+
+func containsReturn(expr parser.Expr) bool {
+	if expr == nil {
+		return false
+	}
+	if block, ok := expr.(*parser.BlockExpr); ok {
+		for _, stmt := range block.Stmts {
+			if _, ok := stmt.(*parser.ReturnStmt); ok {
+				return true
+			}
+			// Check nested blocks (if, while, for, loop)
+			switch s := stmt.(type) {
+			case *parser.ExprStmt:
+				if containsReturn(s.Expr) {
+					return true
+				}
+			case *parser.ForStmt:
+				if containsReturn(s.Body) {
+					return true
+				}
+			case *parser.WhileStmt:
+				if containsReturn(s.Body) {
+					return true
+				}
+			case *parser.LoopStmt:
+				if containsReturn(s.Body) {
+					return true
+				}
+			}
+		}
+		if block.Expr != nil {
+			return containsReturn(block.Expr)
+		}
+	}
+	if ifExpr, ok := expr.(*parser.IfExpr); ok {
+		if containsReturn(ifExpr.Then) {
+			return true
+		}
+		if ifExpr.Else != nil {
+			return containsReturn(ifExpr.Else)
+		}
+	}
+	return false
+}
+
 // ---------- Method return type inference ----------
 
 func (c *Checker) inferMethodReturnType(method string) Type {
@@ -1223,7 +1271,13 @@ func (c *Checker) inferMethodReturnType(method string) Type {
 	case "split":
 		return &ArrayType{Element: TypeStr}
 	// Collection methods
-	case "first", "last":
+	case "first", "last", "get":
+		return &UnresolvedType{Name: method}
+	case "containsKey":
+		return TypeBool
+	case "keys", "values", "entries":
+		return &UnresolvedType{Name: method}
+	case "append", "reverse":
 		return &UnresolvedType{Name: method}
 	// Conversion methods
 	case "parseInt":

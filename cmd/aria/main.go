@@ -393,7 +393,12 @@ func ariaToGoFilename(ariaPath string) string {
 			sb.WriteRune('_')
 		}
 	}
-	return sb.String() + ".go"
+	goName := sb.String()
+	// Go treats *_test.go as test files — avoid that
+	if strings.HasSuffix(goName, "_test") {
+		goName = goName + "_src"
+	}
+	return goName + ".go"
 }
 
 // ---------- Commands ----------

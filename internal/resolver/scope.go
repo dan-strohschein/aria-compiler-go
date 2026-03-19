@@ -107,7 +107,7 @@ func NewUniverseScope() *Scope {
 	}
 
 	// Built-in generic types
-	builtinGenerics := []string{"Option", "Result"}
+	builtinGenerics := []string{"Option", "Result", "Map", "Set"}
 	for _, name := range builtinGenerics {
 		s.Bindings[name] = &Symbol{Name: name, Kind: SymBuiltinType}
 	}

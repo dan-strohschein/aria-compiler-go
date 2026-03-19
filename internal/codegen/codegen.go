@@ -657,7 +657,13 @@ func (g *Generator) genExpr(expr parser.Expr) {
 		g.genClosureExpr(e)
 
 	case *parser.StructExpr:
-		g.genStructExpr(e)
+		if e.TypeName == "Map" {
+			g.write("map[string]interface{}{}")
+		} else if e.TypeName == "Set" {
+			g.write("map[interface{}]bool{}")
+		} else {
+			g.genStructExpr(e)
+		}
 
 	case *parser.ArrayExpr:
 		g.genArrayExpr(e)
@@ -671,16 +677,28 @@ func (g *Generator) genExpr(expr parser.Expr) {
 		}
 
 	case *parser.MapExpr:
-		g.write("map[string]interface{}{")
-		for i, entry := range e.Entries {
-			if i > 0 {
-				g.write(", ")
+		if len(e.Entries) > 0 {
+			keyType := g.inferExprGoType(e.Entries[0].Key)
+			valType := g.inferExprGoType(e.Entries[0].Value)
+			if keyType == "" {
+				keyType = "string"
 			}
-			g.genExpr(entry.Key)
-			g.write(": ")
-			g.genExpr(entry.Value)
+			if valType == "" {
+				valType = "interface{}"
+			}
+			g.write("map[" + keyType + "]" + valType + "{")
+			for i, entry := range e.Entries {
+				if i > 0 {
+					g.write(", ")
+				}
+				g.genExpr(entry.Key)
+				g.write(": ")
+				g.genExpr(entry.Value)
+			}
+			g.write("}")
+		} else {
+			g.write("map[string]interface{}{}")
 		}
-		g.write("}")
 
 	case *parser.ListCompExpr:
 		g.genListComp(e)
@@ -1461,6 +1479,13 @@ func (g *Generator) genBuiltinMethodCall(e *parser.MethodCallExpr) bool {
 		g.genExpr(args[0].Value)
 		g.write(")")
 		return true
+	case "containsKey":
+		g.write("_ariaMapContains(")
+		g.genExpr(e.Object)
+		g.write(", ")
+		g.genExpr(args[0].Value)
+		g.write(")")
+		return true
 	case "startsWith":
 		g.write("strings.HasPrefix(")
 		g.genExpr(e.Object)
@@ -1565,6 +1590,44 @@ func (g *Generator) genBuiltinMethodCall(e *parser.MethodCallExpr) bool {
 		g.write(")")
 		return true
 
+	// Map methods
+	case "get":
+		g.genExpr(e.Object)
+		g.write("[")
+		g.genExpr(args[0].Value)
+		g.write("]")
+		return true
+	case "set":
+		// map.set(key, value) used in statement context
+		g.genExpr(e.Object)
+		g.write("[")
+		g.genExpr(args[0].Value)
+		g.write("] = ")
+		g.genExpr(args[1].Value)
+		return true
+	case "delete":
+		g.write("delete(")
+		g.genExpr(e.Object)
+		g.write(", ")
+		g.genExpr(args[0].Value)
+		g.write(")")
+		return true
+	case "keys":
+		g.write("_ariaMapKeys(")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+	case "values":
+		g.write("_ariaMapValues(")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+	case "entries":
+		g.write("_ariaMapEntries(")
+		g.genExpr(e.Object)
+		g.write(")")
+		return true
+
 	// Conversion methods
 	case "toStr":
 		g.write("fmt.Sprintf(\"%v\", ")
@@ -1650,6 +1713,40 @@ func _ariaWriteFile(path string, content string) {
 func _ariaFileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func _ariaMapKeys[K comparable, V any](m map[K]V) []K {
+	keys := make([]K, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func _ariaMapValues[K comparable, V any](m map[K]V) []V {
+	vals := make([]V, 0, len(m))
+	for _, v := range m {
+		vals = append(vals, v)
+	}
+	return vals
+}
+
+type _ariaMapEntry[K comparable, V any] struct {
+	Key   K
+	Value V
+}
+
+func _ariaMapEntries[K comparable, V any](m map[K]V) []_ariaMapEntry[K, V] {
+	entries := make([]_ariaMapEntry[K, V], 0, len(m))
+	for k, v := range m {
+		entries = append(entries, _ariaMapEntry[K, V]{k, v})
+	}
+	return entries
+}
+
+func _ariaMapContains[K comparable, V any](m map[K]V, key K) bool {
+	_, ok := m[key]
+	return ok
 }
 `
 }
