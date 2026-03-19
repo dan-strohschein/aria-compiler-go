@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/aria-lang/aria/internal/checker"
 	"github.com/aria-lang/aria/internal/lexer"
+	"github.com/aria-lang/aria/internal/parser"
+	"github.com/aria-lang/aria/internal/resolver"
 )
 
 const version = "0.1.0-bootstrap"
@@ -164,14 +167,99 @@ func runLex(files []string, format string) {
 
 func runParse(files []string, format string) {
 	requireFiles(files, "parse")
-	_ = format
-	fmt.Println("parse: not yet implemented")
+	for _, file := range files {
+		source, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot read file %q: %v\n", file, err)
+			os.Exit(1)
+		}
+
+		l := lexer.New(file, string(source))
+		tokens := l.Tokenize()
+		if l.Diagnostics().HasErrors() {
+			l.Diagnostics().Render(os.Stderr)
+			os.Exit(1)
+		}
+
+		p := parser.New(tokens)
+		prog := p.Parse()
+		if p.Diagnostics().HasErrors() {
+			if format == "json" {
+				p.Diagnostics().RenderJSON(os.Stderr)
+			} else {
+				p.Diagnostics().Render(os.Stderr)
+			}
+			os.Exit(1)
+		}
+
+		if format == "json" {
+			out, _ := parser.FormatJSON(prog)
+			fmt.Println(out)
+		} else {
+			fmt.Print(parser.FormatAST(prog))
+		}
+	}
 }
 
 func runCheck(files []string, format string) {
 	requireFiles(files, "check")
-	_ = format
-	fmt.Println("check: not yet implemented")
+	hasErrors := false
+	for _, file := range files {
+		source, err := os.ReadFile(file)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot read file %q: %v\n", file, err)
+			os.Exit(1)
+		}
+
+		l := lexer.New(file, string(source))
+		tokens := l.Tokenize()
+		if l.Diagnostics().HasErrors() {
+			l.Diagnostics().Render(os.Stderr)
+			hasErrors = true
+			continue
+		}
+
+		p := parser.New(tokens)
+		prog := p.Parse()
+		if p.Diagnostics().HasErrors() {
+			if format == "json" {
+				p.Diagnostics().RenderJSON(os.Stderr)
+			} else {
+				p.Diagnostics().Render(os.Stderr)
+			}
+			hasErrors = true
+			continue
+		}
+
+		r := resolver.New()
+		scope := r.Resolve(prog)
+		if r.Diagnostics().HasErrors() {
+			if format == "json" {
+				r.Diagnostics().RenderJSON(os.Stderr)
+			} else {
+				r.Diagnostics().Render(os.Stderr)
+			}
+			hasErrors = true
+			continue
+		}
+
+		ch := checker.New(scope)
+		ch.Check(prog)
+		if ch.Diagnostics().HasErrors() {
+			if format == "json" {
+				ch.Diagnostics().RenderJSON(os.Stderr)
+			} else {
+				ch.Diagnostics().Render(os.Stderr)
+			}
+			hasErrors = true
+			continue
+		}
+
+		fmt.Printf("%s: OK\n", file)
+	}
+	if hasErrors {
+		os.Exit(1)
+	}
 }
 
 func runBuild(files []string, format string) {
