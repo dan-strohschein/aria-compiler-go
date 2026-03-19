@@ -1,0 +1,13 @@
+mod main
+
+struct Point {
+    x: f64
+    y: f64
+}
+
+fn describe(p: Point) -> str = "({p.x}, {p.y})"
+
+entry {
+    p := Point{x: 3.0, y: 4.0}
+    println(describe(p))
+}

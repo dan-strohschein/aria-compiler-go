@@ -1,0 +1,12 @@
+mod main
+
+fn apply(x: i64, f: fn(i64) -> i64) -> i64 = f(x)
+
+entry {
+    result := apply(21, fn(x: i64) => x * 2)
+    println(result)
+}
+
+test "apply double" {
+    assert apply(5, fn(x: i64) => x * 2) == 10
+}

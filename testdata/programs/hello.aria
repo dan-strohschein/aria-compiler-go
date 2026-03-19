@@ -1,0 +1,5 @@
+mod main
+
+entry {
+    println("Hello, Aria!")
+}

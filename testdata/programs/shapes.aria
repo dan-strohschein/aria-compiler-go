@@ -1,0 +1,30 @@
+mod main
+
+type Shape =
+    | Circle(f64)
+    | Rect(f64, f64)
+    | Point
+
+fn area(s: Shape) -> f64 = match s {
+    Circle(r) => 3.14159 * r * r
+    Rect(w, h) => w * h
+    Point => 0.0
+}
+
+entry {
+    println(area(Circle(5.0)))
+    println(area(Rect(3.0, 4.0)))
+    println(area(Point))
+}
+
+test "circle area" {
+    assert area(Circle(1.0)) == 3.14159
+}
+
+test "rect area" {
+    assert area(Rect(3.0, 4.0)) == 12.0
+}
+
+test "point area" {
+    assert area(Point) == 0.0
+}

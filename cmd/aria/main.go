@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/aria-lang/aria/internal/checker"
+	"github.com/aria-lang/aria/internal/codegen"
 	"github.com/aria-lang/aria/internal/lexer"
 	"github.com/aria-lang/aria/internal/parser"
 	"github.com/aria-lang/aria/internal/resolver"
@@ -262,20 +263,126 @@ func runCheck(files []string, format string) {
 	}
 }
 
+// compileToGo runs the full pipeline (lex → parse → resolve → check → codegen)
+// and returns the generated Go source code.
+func compileToGo(file string, format string) (string, string, error) {
+	source, err := os.ReadFile(file)
+	if err != nil {
+		return "", "", fmt.Errorf("cannot read file %q: %v", file, err)
+	}
+
+	l := lexer.New(file, string(source))
+	tokens := l.Tokenize()
+	if l.Diagnostics().HasErrors() {
+		if format == "json" {
+			l.Diagnostics().RenderJSON(os.Stderr)
+		} else {
+			l.Diagnostics().Render(os.Stderr)
+		}
+		return "", "", fmt.Errorf("lexer errors")
+	}
+
+	p := parser.New(tokens)
+	prog := p.Parse()
+	if p.Diagnostics().HasErrors() {
+		if format == "json" {
+			p.Diagnostics().RenderJSON(os.Stderr)
+		} else {
+			p.Diagnostics().Render(os.Stderr)
+		}
+		return "", "", fmt.Errorf("parse errors")
+	}
+
+	r := resolver.New()
+	scope := r.Resolve(prog)
+	if r.Diagnostics().HasErrors() {
+		if format == "json" {
+			r.Diagnostics().RenderJSON(os.Stderr)
+		} else {
+			r.Diagnostics().Render(os.Stderr)
+		}
+		return "", "", fmt.Errorf("resolution errors")
+	}
+
+	ch := checker.New(scope)
+	ch.Check(prog)
+	if ch.Diagnostics().HasErrors() {
+		if format == "json" {
+			ch.Diagnostics().RenderJSON(os.Stderr)
+		} else {
+			ch.Diagnostics().Render(os.Stderr)
+		}
+		return "", "", fmt.Errorf("type errors")
+	}
+
+	gen := codegen.New()
+	goSrc := gen.Generate(prog)
+	testSrc := gen.GenerateTest(prog)
+	return goSrc, testSrc, nil
+}
+
 func runBuild(files []string, format string) {
 	requireFiles(files, "build")
-	_ = format
-	fmt.Println("build: not yet implemented")
+
+	goSrc, _, err := compileToGo(files[0], format)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	// Determine output name from input file
+	base := files[0]
+	base = base[:len(base)-len(".aria")]
+	if idx := len(base) - 1; idx >= 0 {
+		for i := idx; i >= 0; i-- {
+			if base[i] == '/' || base[i] == '\\' {
+				base = base[i+1:]
+				break
+			}
+		}
+	}
+
+	result, err := codegen.Build(goSrc, "", codegen.BuildOptions{
+		OutputPath: base,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("built: %s\n", result.OutputPath)
 }
 
 func runRun(files []string, format string) {
 	requireFiles(files, "run")
-	_ = format
-	fmt.Println("run: not yet implemented")
+
+	goSrc, _, err := compileToGo(files[0], format)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	exitCode, err := codegen.Run(goSrc, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(exitCode)
 }
 
 func runTest(files []string, format string) {
 	requireFiles(files, "test")
-	_ = format
-	fmt.Println("test: not yet implemented")
+
+	goSrc, testSrc, err := compileToGo(files[0], format)
+	if err != nil {
+		os.Exit(1)
+	}
+
+	if testSrc == "" {
+		fmt.Println("no tests found")
+		return
+	}
+
+	output, err := codegen.RunTests(goSrc, testSrc)
+	fmt.Print(output)
+	if err != nil {
+		os.Exit(1)
+	}
 }

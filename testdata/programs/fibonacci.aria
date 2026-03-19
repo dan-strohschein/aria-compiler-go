@@ -1,0 +1,22 @@
+mod main
+
+fn fib(n: i64) -> i64 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+entry {
+    println(fib(10))
+}
+
+test "fib base cases" {
+    assert fib(0) == 0
+    assert fib(1) == 1
+}
+
+test "fib 10" {
+    assert fib(10) == 55
+}
