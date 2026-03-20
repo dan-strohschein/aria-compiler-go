@@ -309,6 +309,7 @@ func (g *Generator) writeImports(prog *parser.Program) {
 	g.indent++
 	g.writeln(`"fmt"`)
 	g.writeln(`"os"`)
+	g.writeln(`"os/exec"`)
 	g.writeln(`"strings"`)
 	g.writeln(`"strconv"`)
 	g.indent--
@@ -316,6 +317,7 @@ func (g *Generator) writeImports(prog *parser.Program) {
 	g.writeln("")
 	g.writeln("var _ = fmt.Sprintf")
 	g.writeln("var _ = os.Exit")
+	g.writeln("var _ = exec.Command")
 	g.writeln("var _ = strings.Contains")
 	g.writeln("var _ = strconv.Itoa")
 }
@@ -866,6 +868,13 @@ func (g *Generator) genCallExpr(e *parser.CallExpr) {
 			return
 		case "_ariaArgs":
 			g.write("_ariaArgs()")
+			return
+		case "_ariaExec":
+			g.write("_ariaExec(")
+			if len(e.Args) > 0 {
+				g.genExpr(e.Args[0].Value)
+			}
+			g.write(")")
 			return
 		}
 
@@ -1991,6 +2000,20 @@ func _ariaMapEntries[K comparable, V any](m map[K]V) []_ariaMapEntry[K, V] {
 func _ariaMapContains[K comparable, V any](m map[K]V, key K) bool {
 	_, ok := m[key]
 	return ok
+}
+
+func _ariaExec(command string) int64 {
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return int64(exitErr.ExitCode())
+		}
+		return 1
+	}
+	return 0
 }
 `
 }
