@@ -116,7 +116,9 @@ func NewUniverseScope() *Scope {
 	s.Bindings["Self"] = &Symbol{Name: "Self", Kind: SymBuiltinType}
 
 	// Built-in functions
-	builtinFns := []string{"print", "println", "panic", "assert"}
+	builtinFns := []string{"print", "println", "eprintln", "panic", "assert",
+		"_ariaWriteFile", "_ariaReadFile", "_ariaFileExists",
+		"_ariaWriteBinaryFile", "_ariaArgs"}
 	for _, name := range builtinFns {
 		s.Bindings[name] = &Symbol{Name: name, Kind: SymBuiltinFn}
 	}

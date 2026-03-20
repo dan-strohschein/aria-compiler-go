@@ -11,11 +11,12 @@ import (
 
 // Generator translates an Aria AST into Go source code.
 type Generator struct {
-	buf     strings.Builder
-	indent  int
-	types   map[string]checker.Type // registered type declarations
-	program *parser.Program
-	tmpVar  int // counter for temporary variables
+	buf       strings.Builder
+	indent    int
+	types     map[string]checker.Type          // registered type declarations
+	exprTypes map[parser.Expr]checker.Type     // expression types from checker
+	program   *parser.Program
+	tmpVar    int // counter for temporary variables
 }
 
 // New creates a new code generator.
@@ -29,6 +30,58 @@ func New() *Generator {
 func NewWithTypes(types map[string]checker.Type) *Generator {
 	return &Generator{
 		types: types,
+	}
+}
+
+// SetExprTypes provides checker-resolved expression types to the generator.
+func (g *Generator) SetExprTypes(et map[parser.Expr]checker.Type) {
+	g.exprTypes = et
+}
+
+// checkerTypeToGoType converts a checker.Type to a Go type string.
+func (g *Generator) checkerTypeToGoType(t checker.Type) string {
+	switch ct := t.(type) {
+	case *checker.PrimitiveType:
+		return goTypeName(ct.Name)
+	case *checker.ArrayType:
+		inner := g.checkerTypeToGoType(ct.Element)
+		if inner != "" {
+			return "[]" + inner
+		}
+		return ""
+	case *checker.StructType:
+		return ct.Name
+	case *checker.SumType:
+		return ct.Name + "Iface"
+	case *checker.FunctionType:
+		var params []string
+		for _, p := range ct.Params {
+			pt := g.checkerTypeToGoType(p)
+			if pt == "" {
+				pt = "interface{}"
+			}
+			params = append(params, pt)
+		}
+		ret := ""
+		if ct.Return != nil {
+			ret = " " + g.checkerTypeToGoType(ct.Return)
+		}
+		return "func(" + strings.Join(params, ", ") + ")" + ret
+	case *checker.MapType:
+		k := g.checkerTypeToGoType(ct.Key)
+		v := g.checkerTypeToGoType(ct.Value)
+		if k != "" && v != "" {
+			return "map[" + k + "]" + v
+		}
+		return ""
+	case *checker.TupleType:
+		return "" // no direct Go equivalent
+	case *checker.OptionalType:
+		return "" // would need pointer wrapper
+	case *checker.UnitType:
+		return ""
+	default:
+		return ""
 	}
 }
 
@@ -213,6 +266,11 @@ func (g *Generator) registerTypes(prog *parser.Program) {
 				sum := &checker.SumType{Name: d.Name}
 				for _, v := range d.Variants {
 					sv := checker.SumVariant{Name: v.Name}
+					for _, f := range v.Fields {
+						sv.Fields = append(sv.Fields, checker.StructField{
+							Name: f.Name,
+						})
+					}
 					sum.Variants = append(sum.Variants, sv)
 				}
 				g.types[d.Name] = sum
@@ -762,6 +820,53 @@ func (g *Generator) genCallExpr(e *parser.CallExpr) {
 			}
 			g.write(`) { panic("assertion failed") }`)
 			return
+		case "eprintln":
+			g.write("fmt.Fprintln(os.Stderr, ")
+			for i, arg := range e.Args {
+				if i > 0 {
+					g.write(", ")
+				}
+				g.genExpr(arg.Value)
+			}
+			g.write(")")
+			return
+		case "_ariaWriteFile":
+			g.write("_ariaWriteFile(")
+			for i, arg := range e.Args {
+				if i > 0 {
+					g.write(", ")
+				}
+				g.genExpr(arg.Value)
+			}
+			g.write(")")
+			return
+		case "_ariaReadFile":
+			g.write("_ariaReadFile(")
+			if len(e.Args) > 0 {
+				g.genExpr(e.Args[0].Value)
+			}
+			g.write(")")
+			return
+		case "_ariaFileExists":
+			g.write("_ariaFileExists(")
+			if len(e.Args) > 0 {
+				g.genExpr(e.Args[0].Value)
+			}
+			g.write(")")
+			return
+		case "_ariaWriteBinaryFile":
+			g.write("_ariaWriteBinaryFile(")
+			for i, arg := range e.Args {
+				if i > 0 {
+					g.write(", ")
+				}
+				g.genExpr(arg.Value)
+			}
+			g.write(")")
+			return
+		case "_ariaArgs":
+			g.write("_ariaArgs()")
+			return
 		}
 
 		// Check if it's a sum type variant constructor
@@ -800,7 +905,12 @@ func (g *Generator) genInterpolatedString(e *parser.InterpolatedStringExpr) {
 	for _, part := range e.Parts {
 		if sl, ok := part.(*parser.StringLitExpr); ok {
 			// Escape % in format string
-			escaped := strings.ReplaceAll(sl.Value, "%", "%%")
+			escaped := strings.ReplaceAll(sl.Value, "\\", "\\\\")
+			escaped = strings.ReplaceAll(escaped, "\n", "\\n")
+			escaped = strings.ReplaceAll(escaped, "\t", "\\t")
+			escaped = strings.ReplaceAll(escaped, "\r", "\\r")
+			escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+			escaped = strings.ReplaceAll(escaped, "%", "%%")
 			fmtParts = append(fmtParts, escaped)
 		} else {
 			fmtParts = append(fmtParts, "%v")
@@ -984,6 +1094,37 @@ func (g *Generator) genMatchArm(arm *parser.MatchArm, tmpVar string, sumType *ch
 		}
 		g.indent--
 
+	case *parser.StructPattern:
+		goType := sumType.Name + p.TypeName
+		g.writeIndent()
+		g.write(fmt.Sprintf("case %s:\n", goType))
+		g.indent++
+		for _, fp := range p.Fields {
+			fieldAccess := fmt.Sprintf("%s.%s", tmpVar, exportField(fp.Name))
+			if fp.Pattern == nil {
+				g.writeln(fmt.Sprintf("%s := %s", fp.Name, fieldAccess))
+			} else if bp, ok := fp.Pattern.(*parser.BindingPattern); ok && bp.Name != "_" {
+				g.writeln(fmt.Sprintf("%s := %s", bp.Name, fieldAccess))
+			}
+		}
+		if arm.Guard != nil {
+			g.writeIndent()
+			g.write("if ")
+			g.genExpr(arm.Guard)
+			g.write(" {\n")
+			g.indent++
+		}
+		g.writeIndent()
+		g.write("return ")
+		g.genExpr(arm.Body)
+		g.write("\n")
+		if arm.Guard != nil {
+			g.indent--
+			g.writeIndent()
+			g.write("}\n")
+		}
+		g.indent--
+
 	case *parser.BindingPattern:
 		// Check if this name matches a known variant (unit variant like Point)
 		if g.isVariantOf(p.Name, sumType) {
@@ -1065,8 +1206,15 @@ func (g *Generator) genClosureExpr(e *parser.ClosureExpr) {
 	g.write(")")
 	if e.Return != nil {
 		g.write(" " + g.goTypeExpr(e.Return))
+	} else if g.exprTypes != nil {
+		if ft, ok := g.exprTypes[e].(*checker.FunctionType); ok && ft.Return != nil {
+			retType := g.checkerTypeToGoType(ft.Return)
+			if retType != "" {
+				g.write(" " + retType)
+			}
+		}
 	} else {
-		// Infer return type from body for simple expressions
+		// Fallback to inference for simple expressions
 		retType := g.inferExprGoType(e.Body)
 		if retType != "" {
 			g.write(" " + retType)
@@ -1138,7 +1286,19 @@ func (g *Generator) inferExprGoType(expr parser.Expr) string {
 }
 
 func (g *Generator) genStructExpr(e *parser.StructExpr) {
-	g.write(e.TypeName + "{")
+	goName := e.TypeName
+	// Check if this is a sum type variant — if so, prefix with sum type name
+	for _, t := range g.types {
+		if st, ok := t.(*checker.SumType); ok {
+			for _, v := range st.Variants {
+				if v.Name == e.TypeName && len(v.Fields) > 0 {
+					goName = st.Name + e.TypeName
+					break
+				}
+			}
+		}
+	}
+	g.write(goName + "{")
 	for i, f := range e.Fields {
 		if i > 0 {
 			g.write(", ")
@@ -1159,8 +1319,23 @@ func (g *Generator) genArrayExpr(e *parser.ArrayExpr) {
 		g.write("[]interface{}{}")
 		return
 	}
-	// Infer element type from first element
-	elemType := g.inferExprGoType(e.Elements[0])
+	// Try checker type info first (handles function calls, etc.)
+	elemType := ""
+	if g.exprTypes != nil {
+		if at, ok := g.exprTypes[e].(*checker.ArrayType); ok {
+			elemType = g.checkerTypeToGoType(at.Element)
+		}
+		// Also try inferring from the first element's checker type
+		if elemType == "" {
+			if ct, ok := g.exprTypes[e.Elements[0]]; ok {
+				elemType = g.checkerTypeToGoType(ct)
+			}
+		}
+	}
+	if elemType == "" {
+		// Fallback: infer element type from first element
+		elemType = g.inferExprGoType(e.Elements[0])
+	}
 	if elemType == "" {
 		// Try to infer from struct/variant constructors
 		elemType = g.inferConstructorType(e.Elements[0])
@@ -1439,15 +1614,31 @@ func (g *Generator) genTestStmt(stmt parser.Stmt) {
 }
 
 func (g *Generator) genTestExprStmt(expr parser.Expr) {
-	// Convert assert calls to t.Fatal
+	// Convert assert calls to t.Fatalf with details
 	if call, ok := expr.(*parser.CallExpr); ok {
 		if ident, ok := call.Func.(*parser.IdentExpr); ok && ident.Name == "assert" {
 			if len(call.Args) > 0 {
+				arg := call.Args[0].Value
 				g.writeIndent()
 				g.write("if !(")
-				g.genExpr(call.Args[0].Value)
-				g.write(`) { t.Fatal("assertion failed") }`)
-				g.write("\n")
+				g.genExpr(arg)
+				g.write(") {\n")
+				g.indent++
+				// Generate detailed failure message based on the assertion type
+				if bin, ok := arg.(*parser.BinaryExpr); ok {
+					g.writeIndent()
+					g.write(fmt.Sprintf("t.Fatalf(\"assertion failed: %%v %s %%v\", ", bin.Op.String()))
+					g.genExpr(bin.Left)
+					g.write(", ")
+					g.genExpr(bin.Right)
+					g.write(")\n")
+				} else {
+					g.writeIndent()
+					g.write(fmt.Sprintf("t.Fatal(\"assertion failed: %s\")\n", exprSummary(arg)))
+				}
+				g.indent--
+				g.writeIndent()
+				g.write("}\n")
 				return
 			}
 		}
@@ -1455,6 +1646,23 @@ func (g *Generator) genTestExprStmt(expr parser.Expr) {
 	g.writeIndent()
 	g.genExpr(expr)
 	g.write("\n")
+}
+
+// exprSummary returns a short human-readable summary of an expression for error messages.
+func exprSummary(expr parser.Expr) string {
+	switch e := expr.(type) {
+	case *parser.IdentExpr:
+		return e.Name
+	case *parser.CallExpr:
+		if ident, ok := e.Func.(*parser.IdentExpr); ok {
+			return ident.Name + "(...)"
+		}
+		return "call expression"
+	case *parser.BinaryExpr:
+		return exprSummary(e.Left) + " " + e.Op.String() + " " + exprSummary(e.Right)
+	default:
+		return "expression"
+	}
 }
 
 // ---------- Built-in method dispatch ----------
@@ -1715,6 +1923,42 @@ func _ariaFileExists(path string) bool {
 	return err == nil
 }
 
+func _ariaWriteBinaryFile(path string, bytes interface{}) {
+	data := make([]byte, 0)
+	switch v := bytes.(type) {
+	case []int64:
+		// Skip sentinel at index 0
+		for i, b := range v {
+			if i == 0 { continue }
+			data = append(data, byte(b&0xFF))
+		}
+	case []interface{}:
+		// Skip sentinel at index 0
+		for i, b := range v {
+			if i == 0 { continue }
+			switch bv := b.(type) {
+			case int64:
+				data = append(data, byte(bv&0xFF))
+			case int:
+				data = append(data, byte(bv&0xFF))
+			default:
+				data = append(data, 0)
+			}
+		}
+	}
+	err := os.WriteFile(path, data, 0755)
+	if err != nil {
+		panic(fmt.Sprintf("writeBinaryFile failed: %v", err))
+	}
+}
+
+func _ariaArgs() []string {
+	// Returns os.Args as a sentinel array (element 0 = "")
+	result := []string{""}
+	result = append(result, os.Args...)
+	return result
+}
+
 func _ariaMapKeys[K comparable, V any](m map[K]V) []K {
 	keys := make([]K, 0, len(m))
 	for k := range m {
@@ -1925,6 +2169,18 @@ func (g *Generator) lookupSumTypeForMatch(e *parser.MatchExpr) *checker.SumType 
 				if st, ok := t.(*checker.SumType); ok {
 					for _, v := range st.Variants {
 						if v.Name == vp.Name {
+							return st
+						}
+					}
+				}
+			}
+		}
+		// Also check struct patterns
+		if sp, ok := arm.Pattern.(*parser.StructPattern); ok {
+			for _, t := range g.types {
+				if st, ok := t.(*checker.SumType); ok {
+					for _, v := range st.Variants {
+						if v.Name == sp.TypeName {
 							return st
 						}
 					}
