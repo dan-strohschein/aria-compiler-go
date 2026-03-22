@@ -336,7 +336,15 @@ func (g *Generator) genTypeDecl(td *parser.TypeDecl) {
 }
 
 func (g *Generator) genStructDecl(td *parser.TypeDecl) {
-	g.writeln(fmt.Sprintf("type %s struct {", td.Name))
+	genericClause := ""
+	if len(td.GenericParams) > 0 {
+		var gparams []string
+		for _, gp := range td.GenericParams {
+			gparams = append(gparams, fmt.Sprintf("%s any", gp.Name))
+		}
+		genericClause = "[" + strings.Join(gparams, ", ") + "]"
+	}
+	g.writeln(fmt.Sprintf("type %s%s struct {", td.Name, genericClause))
 	g.indent++
 	for _, f := range td.Fields {
 		goType := g.goTypeExpr(f.Type)
@@ -452,6 +460,17 @@ func (g *Generator) genMethodDecl(typeName string, fn *parser.FnDecl) {
 // ---------- Function declarations ----------
 
 func (g *Generator) genFnDecl(fn *parser.FnDecl) {
+	// For generic functions, emit Go generics
+	genericClause := ""
+	if len(fn.GenericParams) > 0 {
+		var gparams []string
+		for _, gp := range fn.GenericParams {
+			constraint := "interface{ ~int64 | ~float64 | ~string }"
+			gparams = append(gparams, fmt.Sprintf("%s %s", gp.Name, constraint))
+		}
+		genericClause = "[" + strings.Join(gparams, ", ") + "]"
+	}
+
 	var params []string
 	for _, p := range fn.Params {
 		if p.Name == "self" {
@@ -463,16 +482,14 @@ func (g *Generator) genFnDecl(fn *parser.FnDecl) {
 	retType := ""
 	if fn.ReturnType != nil {
 		goRet := g.goTypeExpr(fn.ReturnType)
-		if len(fn.ErrorTypes) > 0 {
-			retType = fmt.Sprintf(" (%s, error)", goRet)
-		} else {
-			retType = " " + goRet
-		}
+		// Skip error type wrapping — self-hosting compiler doesn't use Result returns
+		retType = " " + goRet
 	} else if len(fn.ErrorTypes) > 0 {
-		retType = " error"
+		// Skip — self-hosting compiler doesn't use standalone error returns
+		retType = ""
 	}
 
-	g.writeln(fmt.Sprintf("func %s(%s)%s {", fn.Name, strings.Join(params, ", "), retType))
+	g.writeln(fmt.Sprintf("func %s%s(%s)%s {", fn.Name, genericClause, strings.Join(params, ", "), retType))
 	g.indent++
 	g.genFnBody(fn)
 	g.indent--
@@ -876,6 +893,19 @@ func (g *Generator) genCallExpr(e *parser.CallExpr) {
 			}
 			g.write(")")
 			return
+		default:
+			// Generic passthrough for _aria* builtins (TCP, PG, concurrency, etc.)
+			if len(ident.Name) > 5 && ident.Name[:5] == "_aria" {
+				g.write(ident.Name + "(")
+				for i, arg := range e.Args {
+					if i > 0 {
+						g.write(", ")
+					}
+					g.genExpr(arg.Value)
+				}
+				g.write(")")
+				return
+			}
 		}
 
 		// Check if it's a sum type variant constructor
@@ -1296,6 +1326,14 @@ func (g *Generator) inferExprGoType(expr parser.Expr) string {
 
 func (g *Generator) genStructExpr(e *parser.StructExpr) {
 	goName := e.TypeName
+	// Add generic type args if present
+	if len(e.TypeArgs) > 0 {
+		var args []string
+		for _, ta := range e.TypeArgs {
+			args = append(args, g.goTypeExpr(ta))
+		}
+		goName += "[" + strings.Join(args, ", ") + "]"
+	}
 	// Check if this is a sum type variant — if so, prefix with sum type name
 	for _, t := range g.types {
 		if st, ok := t.(*checker.SumType); ok {
@@ -2015,6 +2053,47 @@ func _ariaExec(command string) int64 {
 	}
 	return 0
 }
+
+// Environment
+func _ariaGetenv(name string) string { return os.Getenv(name) }
+
+// TCP networking stubs (bootstrap uses LLVM backend for actual networking)
+func _ariaTcpSocket() int64 { panic("TCP not supported in bootstrap") }
+func _ariaTcpBind(fd int64, addr string, port int64) int64 { panic("TCP not supported in bootstrap") }
+func _ariaTcpListen(fd int64, backlog int64) int64 { panic("TCP not supported in bootstrap") }
+func _ariaTcpAccept(fd int64) int64 { panic("TCP not supported in bootstrap") }
+func _ariaTcpRead(fd int64, maxLen int64) string { panic("TCP not supported in bootstrap") }
+func _ariaTcpWrite(fd int64, data string) int64 { panic("TCP not supported in bootstrap") }
+func _ariaTcpClose(fd int64) { panic("TCP not supported in bootstrap") }
+func _ariaTcpPeerAddr(fd int64) string { panic("TCP not supported in bootstrap") }
+func _ariaTcpSetTimeout(fd int64, kind int64, ms int64) int64 { panic("TCP not supported in bootstrap") }
+
+// PostgreSQL stubs (bootstrap uses LLVM backend for actual PG access)
+func _ariaPgConnect(connstr string) int64 { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgClose(conn int64) { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgStatus(conn int64) int64 { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgError(conn int64) string { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgExec(conn int64, query string) int64 { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgExecParams(conn int64, query string, params []string) int64 { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgResultStatus(result int64) int64 { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgResultError(result int64) string { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgNrows(result int64) int64 { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgNcols(result int64) int64 { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgFieldName(result int64, col int64) string { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgGetValue(result int64, row int64, col int64) string { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgIsNull(result int64, row int64, col int64) int64 { panic("PostgreSQL not supported in bootstrap") }
+func _ariaPgClear(result int64) { panic("PostgreSQL not supported in bootstrap") }
+
+// Concurrency stubs
+func _ariaSpawn(closure interface{}) int64 { panic("concurrency not supported in bootstrap") }
+func _ariaTaskAwait(handle int64) int64 { panic("concurrency not supported in bootstrap") }
+func _ariaChanNew(capacity int64) int64 { panic("concurrency not supported in bootstrap") }
+func _ariaChanSend(ch int64, value int64) int64 { panic("concurrency not supported in bootstrap") }
+func _ariaChanRecv(ch int64) int64 { panic("concurrency not supported in bootstrap") }
+func _ariaChanClose(ch int64) { panic("concurrency not supported in bootstrap") }
+func _ariaMutexNew() int64 { panic("concurrency not supported in bootstrap") }
+func _ariaMutexLock(handle int64) { panic("concurrency not supported in bootstrap") }
+func _ariaMutexUnlock(handle int64) { panic("concurrency not supported in bootstrap") }
 `
 }
 
@@ -2027,7 +2106,15 @@ func (g *Generator) goTypeExpr(te parser.TypeExpr) string {
 	switch t := te.(type) {
 	case *parser.NamedTypeExpr:
 		name := t.Path[len(t.Path)-1]
-		return goTypeName(name)
+		goName := goTypeName(name)
+		if len(t.TypeArgs) > 0 {
+			var args []string
+			for _, ta := range t.TypeArgs {
+				args = append(args, g.goTypeExpr(ta))
+			}
+			return goName + "[" + strings.Join(args, ", ") + "]"
+		}
+		return goName
 	case *parser.ArrayTypeExpr:
 		return "[]" + g.goTypeExpr(t.Element)
 	case *parser.MapTypeExpr:

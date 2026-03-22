@@ -118,7 +118,18 @@ func NewUniverseScope() *Scope {
 	// Built-in functions
 	builtinFns := []string{"print", "println", "eprintln", "panic", "assert",
 		"_ariaWriteFile", "_ariaReadFile", "_ariaFileExists",
-		"_ariaWriteBinaryFile", "_ariaArgs", "_ariaExec"}
+		"_ariaWriteBinaryFile", "_ariaArgs", "_ariaExec",
+		"_ariaGetenv",
+		"_ariaTcpSocket", "_ariaTcpBind", "_ariaTcpListen", "_ariaTcpAccept",
+		"_ariaTcpRead", "_ariaTcpWrite", "_ariaTcpClose", "_ariaTcpPeerAddr",
+		"_ariaTcpSetTimeout",
+		"_ariaPgConnect", "_ariaPgClose", "_ariaPgStatus", "_ariaPgError",
+		"_ariaPgExec", "_ariaPgExecParams", "_ariaPgResultStatus", "_ariaPgResultError",
+		"_ariaPgNrows", "_ariaPgNcols", "_ariaPgFieldName", "_ariaPgGetValue",
+		"_ariaPgIsNull", "_ariaPgClear",
+		"_ariaSpawn", "_ariaTaskAwait",
+		"_ariaChanNew", "_ariaChanSend", "_ariaChanRecv", "_ariaChanClose",
+		"_ariaMutexNew", "_ariaMutexLock", "_ariaMutexUnlock"}
 	for _, name := range builtinFns {
 		s.Bindings[name] = &Symbol{Name: name, Kind: SymBuiltinFn}
 	}
