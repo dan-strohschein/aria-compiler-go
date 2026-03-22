@@ -119,7 +119,7 @@ func NewUniverseScope() *Scope {
 	builtinFns := []string{"print", "println", "eprintln", "panic", "assert",
 		"_ariaWriteFile", "_ariaReadFile", "_ariaFileExists",
 		"_ariaWriteBinaryFile", "_ariaArgs", "_ariaExec",
-		"_ariaGetenv",
+		"_ariaGetenv", "_ariaListDir", "_ariaIsDir",
 		"_ariaTcpSocket", "_ariaTcpBind", "_ariaTcpListen", "_ariaTcpAccept",
 		"_ariaTcpRead", "_ariaTcpWrite", "_ariaTcpClose", "_ariaTcpPeerAddr",
 		"_ariaTcpSetTimeout",

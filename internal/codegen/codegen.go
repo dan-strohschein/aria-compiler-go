@@ -1303,6 +1303,15 @@ func (g *Generator) inferExprGoType(expr parser.Expr) string {
 	case *parser.GroupExpr:
 		return g.inferExprGoType(e.Inner)
 	case *parser.CallExpr:
+		// Check checker type info first (handles cross-file function calls)
+		if g.exprTypes != nil {
+			if ct, ok := g.exprTypes[expr]; ok {
+				gt := g.checkerTypeToGoType(ct)
+				if gt != "" && gt != "interface{}" {
+					return gt
+				}
+			}
+		}
 		// Check if calling a known function with a return type
 		if ident, ok := e.Func.(*parser.IdentExpr); ok {
 			// Look up function in program declarations
@@ -2056,6 +2065,29 @@ func _ariaExec(command string) int64 {
 
 // Environment
 func _ariaGetenv(name string) string { return os.Getenv(name) }
+
+func _ariaListDir(path string) []string {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return []string{""}
+	}
+	result := []string{""}
+	for _, e := range entries {
+		result = append(result, e.Name())
+	}
+	return result
+}
+
+func _ariaIsDir(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	if info.IsDir() {
+		return 1
+	}
+	return 0
+}
 
 // TCP networking stubs (bootstrap uses LLVM backend for actual networking)
 func _ariaTcpSocket() int64 { panic("TCP not supported in bootstrap") }
