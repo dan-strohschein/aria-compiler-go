@@ -134,6 +134,7 @@ func NewUniverseScope() *Scope {
 		"_ariaRWMutexNew", "_ariaRWMutexRlock", "_ariaRWMutexRunlock", "_ariaRWMutexWlock", "_ariaRWMutexWunlock",
 		"_ariaWgNew", "_ariaWgAdd", "_ariaWgDone", "_ariaWgWait",
 		"_ariaOnceNew", "_ariaOnceCall",
+		"_ariaCancelNew", "_ariaCancelChild", "_ariaCancelTrigger", "_ariaCancelIsTriggered",
 		"_ariaMutexNew", "_ariaMutexLock", "_ariaMutexUnlock"}
 	for _, name := range builtinFns {
 		s.Bindings[name] = &Symbol{Name: name, Kind: SymBuiltinFn}
