@@ -136,7 +136,7 @@ func NewUniverseScope() *Scope {
 		"_ariaOnceNew", "_ariaOnceCall",
 		"_ariaCancelNew", "_ariaCancelChild", "_ariaCancelTrigger", "_ariaCancelIsTriggered",
 		"_ariaSbNew", "_ariaSbWithCapacity", "_ariaSbAppend", "_ariaSbAppendChar", "_ariaSbLen", "_ariaSbBuild", "_ariaSbClear",
-		"or", "must", "from", "default", "stack", "arena", "inline",
+		"or", "must", "from", "default", "stack", "arena", "inline", "extern",
 		"_ariaGcCollect", "_ariaGcTotalBytes", "_ariaGcAllocationCount",
 		"_ariaArenaNew", "_ariaArenaAlloc", "_ariaArenaReset", "_ariaArenaFree",
 		"_ariaArenaAllocated", "_ariaArenaCapacity",
