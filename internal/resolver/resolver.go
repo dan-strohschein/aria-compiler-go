@@ -84,6 +84,9 @@ func (r *Resolver) Diagnostics() *diagnostic.DiagnosticList {
 // ---------- Phase 1: Register top-level names ----------
 
 func (r *Resolver) registerTopLevel(prog *parser.Program) {
+	// Pass 1: Register all type names, functions, enums, consts, traits, aliases.
+	// Sum type variant names are deferred to pass 2 so that structs with the
+	// same name as a variant take priority (Bug 5 fix).
 	for _, decl := range prog.Decls {
 		switch d := decl.(type) {
 		case *parser.FnDecl:
@@ -94,22 +97,31 @@ func (r *Resolver) registerTopLevel(prog *parser.Program) {
 				Pos:  d.Pos,
 			})
 		case *parser.TypeDecl:
-			r.defineOrError(d.Name, &Symbol{
-				Name: d.Name,
-				Kind: SymType,
-				Decl: d,
-				Pos:  d.Pos,
-			})
-			// Also register variant names for sum types
-			if d.Kind == parser.SumTypeDecl {
-				for _, v := range d.Variants {
-					r.defineOrError(v.Name, &Symbol{
-						Name: v.Name,
-						Kind: SymVariant,
+			// If a variant was already registered (from another sum type), allow
+			// a struct to override it.
+			if d.Kind == parser.StructDecl {
+				if existing, ok := r.current.Bindings[d.Name]; ok && existing.Kind == SymVariant {
+					r.current.Bindings[d.Name] = &Symbol{
+						Name: d.Name,
+						Kind: SymType,
 						Decl: d,
-						Pos:  v.Pos,
+						Pos:  d.Pos,
+					}
+				} else {
+					r.defineOrError(d.Name, &Symbol{
+						Name: d.Name,
+						Kind: SymType,
+						Decl: d,
+						Pos:  d.Pos,
 					})
 				}
+			} else {
+				r.defineOrError(d.Name, &Symbol{
+					Name: d.Name,
+					Kind: SymType,
+					Decl: d,
+					Pos:  d.Pos,
+				})
 			}
 		case *parser.EnumDecl:
 			r.defineOrError(d.Name, &Symbol{
@@ -156,6 +168,23 @@ func (r *Resolver) registerTopLevel(prog *parser.Program) {
 			// Test blocks don't introduce a name
 		}
 	}
+
+	// Pass 2: Register sum type variant names, skipping any that already
+	// exist in scope (e.g., a struct with the same name).
+	for _, decl := range prog.Decls {
+		if d, ok := decl.(*parser.TypeDecl); ok && d.Kind == parser.SumTypeDecl {
+			for _, v := range d.Variants {
+				if _, exists := r.current.Bindings[v.Name]; !exists {
+					r.current.Bindings[v.Name] = &Symbol{
+						Name: v.Name,
+						Kind: SymVariant,
+						Decl: d,
+						Pos:  v.Pos,
+					}
+				}
+			}
+		}
+	}
 }
 
 func (r *Resolver) defineOrError(name string, sym *Symbol) {
@@ -179,6 +208,11 @@ func (r *Resolver) resolveImport(imp *parser.ImportDecl) {
 	if imp.Names != nil {
 		// Grouped import: use std.{json, http}
 		for _, name := range imp.Names {
+			// Skip if name already exists in scope (e.g., from another file
+			// in the same compilation unit that also imports it).
+			if _, exists := r.current.Bindings[name]; exists {
+				continue
+			}
 			subPath := fullPath + "." + name
 			if _, ok := r.modules[subPath]; ok {
 				importName := name
@@ -221,6 +255,14 @@ func (r *Resolver) resolveImport(imp *parser.ImportDecl) {
 	localName := imp.Path[len(imp.Path)-1]
 	if imp.Alias != "" {
 		localName = imp.Alias
+	}
+
+	// Skip if this name already exists in scope (e.g., module name from
+	// same compilation unit). This prevents "duplicate declaration" errors
+	// when a file does `use diagnostic` and `mod diagnostic` is already
+	// registered from another file in the same compilation.
+	if _, exists := r.current.Bindings[localName]; exists {
+		return
 	}
 
 	if _, ok := r.modules[fullPath]; ok {

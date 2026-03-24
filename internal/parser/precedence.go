@@ -377,6 +377,22 @@ func (p *Parser) parseIdentOrStructExpr() Expr {
 	pos := p.currentPos()
 	name := p.advance() // consume ident
 
+	// Check for generic struct literal: Name[Type]{...}
+	var structTypeArgs []TypeExpr
+	if p.check(lexer.LBracket) && len(name.Literal) > 0 && name.Literal[0] >= 'A' && name.Literal[0] <= 'Z' {
+		p.advance() // consume [
+		for !p.check(lexer.RBracket) && !p.isAtEnd() {
+			ta := p.parseTypeExpr()
+			structTypeArgs = append(structTypeArgs, ta)
+			if p.check(lexer.Comma) {
+				p.advance()
+			}
+		}
+		if p.check(lexer.RBracket) {
+			p.advance() // consume ]
+		}
+	}
+
 	// Check for struct literal: Name { field: value }
 	// Struct literal: Name { field: value, ... }
 	// Only treat as struct literal if:
@@ -389,7 +405,7 @@ func (p *Parser) parseIdentOrStructExpr() Expr {
 			p.skipNewlines()
 			fields := p.parseFieldInitList()
 			p.expect(lexer.RBrace)
-			return &StructExpr{TypeName: name.Literal, Fields: fields, Pos: pos}
+			return &StructExpr{TypeName: name.Literal, TypeArgs: structTypeArgs, Fields: fields, Pos: pos}
 		}
 	}
 

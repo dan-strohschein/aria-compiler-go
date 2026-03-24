@@ -49,6 +49,7 @@ type Checker struct {
 	fnCtx       *FnContext               // current function context
 	typeEnv     *TypeEnv                 // current variable type bindings
 	traits      *TraitRegistry
+	exprTypes   map[parser.Expr]Type // expression -> resolved type (for codegen)
 }
 
 // New creates a new Checker.
@@ -60,6 +61,7 @@ func New(scope *resolver.Scope) *Checker {
 		fnTypes:     make(map[string]*FunctionType),
 		typeEnv:     NewTypeEnv(nil),
 		traits:      NewTraitRegistry(),
+		exprTypes:   make(map[parser.Expr]Type),
 	}
 	return c
 }
@@ -84,6 +86,11 @@ func (c *Checker) Check(prog *parser.Program) {
 // Diagnostics returns accumulated diagnostics.
 func (c *Checker) Diagnostics() *diagnostic.DiagnosticList {
 	return c.diagnostics
+}
+
+// ExprTypes returns the map of expression types recorded during checking.
+func (c *Checker) ExprTypes() map[parser.Expr]Type {
+	return c.exprTypes
 }
 
 // ---------- Phase 1: Register types ----------
@@ -243,6 +250,11 @@ func (c *Checker) checkDecl(decl parser.Decl) {
 }
 
 func (c *Checker) checkFnDecl(fn *parser.FnDecl) {
+	// Skip generic function bodies — they are checked per-specialization
+	if len(fn.GenericParams) > 0 {
+		return
+	}
+
 	ft := c.fnTypes[fn.Name]
 	if ft == nil {
 		return
@@ -274,7 +286,11 @@ func (c *Checker) checkFnDecl(fn *parser.FnDecl) {
 		// Skip return type check if body has explicit return statements
 		hasExplicitReturn := containsReturn(fn.Body)
 		if bodyType != nil && ft.Return != nil && !hasExplicitReturn {
-			if !IsAssignable(bodyType, ft.Return) {
+			// Skip check if types involve unresolved types (from complex type annotations)
+			retStr := ft.Return.String()
+			bodyStr := bodyType.String()
+			hasUnresolved := containsUnresolved(retStr) || containsUnresolved(bodyStr)
+			if !hasUnresolved && !IsAssignable(bodyType, ft.Return) {
 				c.error(fn.Pos, diagnostic.E0106,
 					fmt.Sprintf("function '%s' return type mismatch: expected %s, got %s",
 						fn.Name, ft.Return, bodyType))
@@ -457,9 +473,13 @@ func (c *Checker) checkExpr(expr parser.Expr) Type {
 		return &UnresolvedType{Name: "index"}
 
 	case *parser.PipelineExpr:
-		leftType := c.checkExpr(e.Left)
-		_ = leftType
-		return c.checkExpr(e.Right)
+		c.checkExpr(e.Left)
+		rightType := c.checkExpr(e.Right)
+		// Pipeline applies right to left: result is the return type of right
+		if ft, ok := Unwrap(rightType).(*FunctionType); ok && ft.Return != nil {
+			return ft.Return
+		}
+		return rightType
 
 	case *parser.RangeExpr:
 		startType := c.checkExpr(e.Start)
@@ -747,10 +767,14 @@ func (c *Checker) checkCallExpr(e *parser.CallExpr) Type {
 				} else {
 					errType = &ErrorUnion{Types: ft.Errors}
 				}
-				return &ResultType{Ok: ft.Return, Err: errType}
+				result := &ResultType{Ok: ft.Return, Err: errType}
+				c.exprTypes[e] = result
+				return result
 			}
+			c.exprTypes[e] = ft.Return
 			return ft.Return
 		}
+		c.exprTypes[e] = TypeUnit
 		return TypeUnit
 	}
 
@@ -883,6 +907,7 @@ func (c *Checker) checkClosureExpr(e *parser.ClosureExpr) Type {
 		ft.Return = bodyType
 	}
 
+	c.exprTypes[e] = ft
 	c.typeEnv = prevEnv
 	return ft
 }
@@ -949,7 +974,9 @@ func (c *Checker) checkArrayExpr(e *parser.ArrayExpr) Type {
 			}
 		}
 	}
-	return &ArrayType{Element: elemType}
+	result := &ArrayType{Element: elemType}
+	c.exprTypes[e] = result
+	return result
 }
 
 // ---------- Check statements ----------
@@ -1037,7 +1064,10 @@ func (c *Checker) checkStmt(stmt parser.Stmt) {
 			retType := c.checkExpr(s.Value)
 			if c.fnCtx != nil && c.fnCtx.ReturnType != nil {
 				if _, ok := retType.(*UnresolvedType); !ok {
-					if !IsAssignable(retType, c.fnCtx.ReturnType) {
+					retStr := c.fnCtx.ReturnType.String()
+					bodyStr := retType.String()
+					hasUnresolved := containsUnresolved(retStr) || containsUnresolved(bodyStr)
+					if !hasUnresolved && !IsAssignable(retType, c.fnCtx.ReturnType) {
 						c.error(s.Pos, diagnostic.E0106,
 							fmt.Sprintf("return type mismatch: expected %s, got %s",
 								c.fnCtx.ReturnType, retType))
@@ -1209,6 +1239,15 @@ func (c *Checker) collectCoveredVariants(pat parser.Pattern, covered map[string]
 }
 
 // ---------- Return statement detection ----------
+
+func containsUnresolved(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '?' {
+			return true
+		}
+	}
+	return false
+}
 
 func containsReturn(expr parser.Expr) bool {
 	if expr == nil {

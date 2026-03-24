@@ -24,7 +24,8 @@ type Lexer struct {
 	braceDepth   int
 
 	// String interpolation state
-	interpDepth int // nesting depth of string interpolation
+	interpDepth      int   // nesting depth of string interpolation
+	interpBraceStack []int // braceDepth at each interpolation entry
 
 	diagnostics *diagnostic.DiagnosticList
 }
@@ -81,7 +82,10 @@ func (l *Lexer) NextToken() Token {
 	}
 
 	// Check if we're at the end of a string interpolation
-	if l.interpDepth > 0 && l.peek() == '}' {
+	// Only end interpolation when the brace depth matches the entry depth
+	if l.interpDepth > 0 && l.peek() == '}' && len(l.interpBraceStack) > 0 &&
+		l.braceDepth == l.interpBraceStack[len(l.interpBraceStack)-1] {
+		l.interpBraceStack = l.interpBraceStack[:len(l.interpBraceStack)-1]
 		return l.continueInterpolatedString()
 	}
 
@@ -360,6 +364,7 @@ func (l *Lexer) lexString() Token {
 			hasInterpolation = true
 			l.interpDepth++
 			l.braceDepth++ // track for delimiter balancing
+			l.interpBraceStack = append(l.interpBraceStack, l.braceDepth)
 
 			tok := Token{Type: StringStart, Literal: buf.String(), Pos: pos}
 			l.advance() // consume {
@@ -423,6 +428,7 @@ func (l *Lexer) continueInterpolatedString() Token {
 			// Another interpolation
 			l.interpDepth++
 			l.braceDepth++
+			l.interpBraceStack = append(l.interpBraceStack, l.braceDepth)
 			tok := Token{Type: StringMiddle, Literal: buf.String(), Pos: pos}
 			l.advance() // consume {
 			l.prevTok = StringMiddle
@@ -606,13 +612,8 @@ func (l *Lexer) lexOperatorOrPunct() Token {
 		l.braceDepth++
 		return l.makeTokenAt(LBrace, "{", pos)
 	case '}':
-		if l.interpDepth > 0 {
-			// Don't decrease braceDepth here; continueInterpolatedString handles it
-			// But we need to rewind and let the interpolation handler deal with it
-			l.pos--
-			l.col--
-			return l.continueInterpolatedString()
-		}
+		// Note: interpolation-ending } is handled by the early check in NextToken()
+		// before lexOperatorOrPunct is called. Any } that reaches here is a regular brace.
 		l.braceDepth--
 		return l.makeTokenAt(RBrace, "}", pos)
 	case ',':

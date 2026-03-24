@@ -51,6 +51,8 @@ func BuildMulti(goFiles []GoFile, testFiles []GoFile, opts BuildOptions) (*Build
 			return nil, fmt.Errorf("failed to write %s: %w", gf.Name, err)
 		}
 		exec.Command("gofmt", "-w", path).Run()
+		// Save a copy for debugging
+		os.WriteFile("/tmp/aria_gen_"+gf.Name, []byte(gf.Source), 0644)
 	}
 
 	// Write test files
@@ -153,7 +155,9 @@ func RunTestsMulti(goFiles []GoFile, testFiles []GoFile) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		os.RemoveAll(tmpDir)
+	}()
 
 	goMod := "module aria_generated\n\ngo 1.21\n"
 	os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0644)
@@ -193,18 +197,32 @@ func RunTests(goSource string, testSource string) (string, error) {
 func formatTestOutput(goOutput string) string {
 	var sb strings.Builder
 	lines := strings.Split(goOutput, "\n")
+	inFail := false
+	summarized := false
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "--- PASS:") {
-			name := extractTestName(line)
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--- PASS:") {
+			inFail = false
+			name := extractTestName(trimmed)
 			sb.WriteString(fmt.Sprintf("  ✓ %s\n", name))
-		} else if strings.HasPrefix(line, "--- FAIL:") {
-			name := extractTestName(line)
+		} else if strings.HasPrefix(trimmed, "--- FAIL:") {
+			inFail = false
+			name := extractTestName(trimmed)
 			sb.WriteString(fmt.Sprintf("  ✗ %s\n", name))
-		} else if strings.HasPrefix(line, "PASS") {
+		} else if strings.HasPrefix(trimmed, "=== RUN") {
+			inFail = true
+		} else if inFail && strings.Contains(trimmed, "assertion failed") {
+			msg := trimmed
+			if idx := strings.Index(msg, "assertion failed"); idx > 0 {
+				msg = msg[idx:]
+			}
+			sb.WriteString(fmt.Sprintf("        %s\n", msg))
+		} else if !summarized && strings.HasPrefix(trimmed, "PASS") {
 			sb.WriteString("\nAll tests passed.\n")
-		} else if strings.HasPrefix(line, "FAIL") && !strings.HasPrefix(line, "--- FAIL:") {
+			summarized = true
+		} else if !summarized && strings.HasPrefix(trimmed, "FAIL") && !strings.HasPrefix(trimmed, "--- FAIL:") {
 			sb.WriteString("\nSome tests failed.\n")
+			summarized = true
 		}
 	}
 	return sb.String()

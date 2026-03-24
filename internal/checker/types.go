@@ -453,11 +453,21 @@ func (t *ErrorUnion) Equals(other Type) bool {
 // ---------- Type utilities ----------
 
 // Unwrap resolves aliases to their underlying type.
+// Uses iterative approach with cycle detection to prevent infinite loops
+// from cyclic alias chains.
 func Unwrap(t Type) Type {
-	if a, ok := t.(*AliasType); ok {
-		return Unwrap(a.Target)
+	seen := make(map[Type]bool)
+	for {
+		a, ok := t.(*AliasType)
+		if !ok {
+			return t
+		}
+		if seen[a] {
+			return t
+		}
+		seen[a] = true
+		t = a.Target
 	}
-	return t
 }
 
 // IsAssignable checks if `from` can be assigned to a location expecting `to`.

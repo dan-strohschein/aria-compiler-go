@@ -294,6 +294,19 @@ func (p *Parser) parseFnDecl(vis Visibility) *FnDecl {
 		p.expect(lexer.RBracket)
 	}
 
+	// Optional where clause
+	if p.check(lexer.Where) {
+		fn.WhereClause = p.parseWhereClause()
+		// Merge where clause bounds into generic params
+		for _, item := range fn.WhereClause {
+			for _, gp := range fn.GenericParams {
+				if gp.Name == item.Name && len(gp.Bounds) == 0 {
+					gp.Bounds = item.Bounds
+				}
+			}
+		}
+	}
+
 	// Body
 	if p.match(lexer.Eq) {
 		fn.Body = p.parseExpression()

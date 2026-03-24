@@ -137,17 +137,19 @@ func discoverAriaFiles(inputs []string) []string {
 		}
 
 		if info.IsDir() {
-			// Directory: find all .aria files
-			entries, _ := os.ReadDir(input)
-			for _, e := range entries {
-				if !e.IsDir() && strings.HasSuffix(e.Name(), ".aria") {
-					path := filepath.Join(input, e.Name())
+			// Directory: find all .aria files recursively
+			filepath.WalkDir(input, func(path string, d os.DirEntry, err error) error {
+				if err != nil {
+					return nil
+				}
+				if !d.IsDir() && strings.HasSuffix(d.Name(), ".aria") {
 					if !seen[path] {
 						files = append(files, path)
 						seen[path] = true
 					}
 				}
-			}
+				return nil
+			})
 		} else if strings.HasSuffix(input, ".aria") {
 			absPath, _ := filepath.Abs(input)
 			if !seen[absPath] {
@@ -320,6 +322,7 @@ func compileProject(inputs []string, format string) ([]codegen.GoFile, []codegen
 		ch.Diagnostics().Render(os.Stderr)
 		os.Exit(1)
 	}
+	exprTypes := ch.ExprTypes()
 
 	// Phase 4: Generate Go source.
 	// Find which file has the entry block — that becomes main.go.
@@ -349,6 +352,7 @@ func compileProject(inputs []string, format string) ([]codegen.GoFile, []codegen
 		if hasEntry {
 			entryFound = true
 			gen := codegen.NewWithTypes(sharedTypes)
+			gen.SetExprTypes(exprTypes)
 			goSrc := gen.Generate(pf.prog)
 			goFiles = append(goFiles, codegen.GoFile{Name: goName, Source: goSrc})
 
@@ -359,6 +363,7 @@ func compileProject(inputs []string, format string) ([]codegen.GoFile, []codegen
 			}
 		} else {
 			gen := codegen.NewWithTypes(sharedTypes)
+			gen.SetExprTypes(exprTypes)
 			goSrc := gen.GenerateModule(pf.prog)
 			goFiles = append(goFiles, codegen.GoFile{Name: goName, Source: goSrc})
 
@@ -371,10 +376,10 @@ func compileProject(inputs []string, format string) ([]codegen.GoFile, []codegen
 	}
 
 	if !entryFound && len(parsed) > 0 {
-		// If no entry block, generate an empty main
+		// If no entry block, generate an empty main with runtime helpers
 		goFiles = append(goFiles, codegen.GoFile{
 			Name:   "aria_main.go",
-			Source: "package main\n\nfunc main() {}\n",
+			Source: "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strconv\"\n\t\"strings\"\n)\n\nvar _ = fmt.Sprintf\nvar _ = os.Exit\nvar _ = strconv.Itoa\nvar _ = strings.Contains\n\nfunc main() {}\n" + codegen.RuntimeHelpers(),
 		})
 	}
 

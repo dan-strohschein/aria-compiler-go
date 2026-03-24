@@ -64,6 +64,7 @@ type FnDecl struct {
 	ReturnType TypeExpr
 	ErrorTypes []TypeExpr
 	Effects    []string
+	WhereClause []*WhereItem
 	Body       Expr // BlockExpr or single expression
 	Pos        Pos
 }
@@ -424,6 +425,7 @@ func (e *ClosureExpr) GetPos() Pos { return e.Pos }
 
 type StructExpr struct {
 	TypeName string
+	TypeArgs []TypeExpr
 	Fields   []*FieldInit
 	Pos      Pos
 }

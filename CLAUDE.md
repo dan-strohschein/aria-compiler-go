@@ -121,18 +121,20 @@ aria-compiler-go/
 
 ## Build & Test
 
+**IMPORTANT: Always run ALL tests with a 6 GB memory limit to prevent system crashes.**
+
 ```bash
 # Build the compiler
 go build -o aria ./cmd/aria
 
-# Run tests
-go test ./...
+# Run tests (ALWAYS use -memprofile or GOMEMLIMIT=6GiB)
+GOMEMLIMIT=6GiB go test ./...
 
 # Run a specific package's tests
-go test ./internal/lexer/
+GOMEMLIMIT=6GiB go test ./internal/lexer/
 
 # Run with verbose output
-go test -v ./internal/parser/
+GOMEMLIMIT=6GiB go test -v ./internal/parser/
 
 # Run the compiler on an Aria file
 ./aria check examples/01-hello-world.aria
