@@ -1974,6 +1974,18 @@ func _ariaWriteFile(path string, content string) {
 	}
 }
 
+func _ariaAppendFile(path string, content string) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		panic(fmt.Sprintf("appendFile failed: %v", err))
+	}
+	defer f.Close()
+	_, err = f.WriteString(content)
+	if err != nil {
+		panic(fmt.Sprintf("appendFile write failed: %v", err))
+	}
+}
+
 func _ariaFileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
