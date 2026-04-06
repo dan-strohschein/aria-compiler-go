@@ -281,7 +281,11 @@ func compileProject(inputs []string, format string) ([]codegen.GoFile, []codegen
 		l := lexer.New(file, string(source))
 		tokens := l.Tokenize()
 		if l.Diagnostics().HasErrors() {
-			l.Diagnostics().Render(os.Stderr)
+			if format == "json" {
+				l.Diagnostics().RenderJSON(os.Stderr)
+			} else {
+				l.Diagnostics().Render(os.Stderr)
+			}
 			hasErrors = true
 			continue
 		}
@@ -289,7 +293,11 @@ func compileProject(inputs []string, format string) ([]codegen.GoFile, []codegen
 		p := parser.New(tokens)
 		prog := p.Parse()
 		if p.Diagnostics().HasErrors() {
-			p.Diagnostics().Render(os.Stderr)
+			if format == "json" {
+				p.Diagnostics().RenderJSON(os.Stderr)
+			} else {
+				p.Diagnostics().Render(os.Stderr)
+			}
 			hasErrors = true
 			continue
 		}
@@ -309,7 +317,11 @@ func compileProject(inputs []string, format string) ([]codegen.GoFile, []codegen
 	}
 	scope := r.ResolveMulti(allProgs)
 	if r.Diagnostics().HasErrors() {
-		r.Diagnostics().Render(os.Stderr)
+		if format == "json" {
+			r.Diagnostics().RenderJSON(os.Stderr)
+		} else {
+			r.Diagnostics().Render(os.Stderr)
+		}
 		os.Exit(1)
 	}
 
@@ -319,7 +331,11 @@ func compileProject(inputs []string, format string) ([]codegen.GoFile, []codegen
 		ch.Check(pf.prog)
 	}
 	if ch.Diagnostics().HasErrors() {
-		ch.Diagnostics().Render(os.Stderr)
+		if format == "json" {
+			ch.Diagnostics().RenderJSON(os.Stderr)
+		} else {
+			ch.Diagnostics().Render(os.Stderr)
+		}
 		os.Exit(1)
 	}
 	exprTypes := ch.ExprTypes()
@@ -425,7 +441,11 @@ func runCheck(files []string, format string) {
 		l := lexer.New(file, string(source))
 		tokens := l.Tokenize()
 		if l.Diagnostics().HasErrors() {
-			l.Diagnostics().Render(os.Stderr)
+			if format == "json" {
+				l.Diagnostics().RenderJSON(os.Stderr)
+			} else {
+				l.Diagnostics().Render(os.Stderr)
+			}
 			hasErrors = true
 			continue
 		}
@@ -433,7 +453,11 @@ func runCheck(files []string, format string) {
 		p := parser.New(tokens)
 		prog := p.Parse()
 		if p.Diagnostics().HasErrors() {
-			p.Diagnostics().Render(os.Stderr)
+			if format == "json" {
+				p.Diagnostics().RenderJSON(os.Stderr)
+			} else {
+				p.Diagnostics().Render(os.Stderr)
+			}
 			hasErrors = true
 			continue
 		}
@@ -447,7 +471,11 @@ func runCheck(files []string, format string) {
 	r := resolver.New()
 	scope := r.ResolveMulti(progs)
 	if r.Diagnostics().HasErrors() {
-		r.Diagnostics().Render(os.Stderr)
+		if format == "json" {
+			r.Diagnostics().RenderJSON(os.Stderr)
+		} else {
+			r.Diagnostics().Render(os.Stderr)
+		}
 		os.Exit(1)
 	}
 
@@ -457,12 +485,20 @@ func runCheck(files []string, format string) {
 		ch.Check(prog)
 	}
 	if ch.Diagnostics().HasErrors() {
-		ch.Diagnostics().Render(os.Stderr)
+		if format == "json" {
+			ch.Diagnostics().RenderJSON(os.Stderr)
+		} else {
+			ch.Diagnostics().Render(os.Stderr)
+		}
 		os.Exit(1)
 	}
 
-	for _, f := range allFiles {
-		fmt.Printf("%s: OK\n", f)
+	if format == "json" {
+		fmt.Print("{\"diagnostics\":[],\"summary\":{\"errors\":0,\"warnings\":0}}")
+	} else {
+		for _, f := range allFiles {
+			fmt.Printf("%s: OK\n", f)
+		}
 	}
 }
 
