@@ -75,7 +75,11 @@ func BuildMulti(goFiles []GoFile, testFiles []GoFile, opts BuildOptions) (*Build
 	}
 
 	// Run go build
-	buildCmd := exec.Command("go", "build", "-o", absOutput, ".")
+	// -gcflags="-l" disables inlining, which prevents the Go compiler from
+	// optimizing away stack stores that the GC needs to find live struct values.
+	// Without this, large immutable struct updates (Lowerer pattern) cause
+	// non-deterministic GC corruption.
+	buildCmd := exec.Command("go", "build", "-gcflags=-l", "-o", absOutput, ".")
 	buildCmd.Dir = tmpDir
 	buildCmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 

@@ -310,6 +310,8 @@ func (g *Generator) writeImports(prog *parser.Program) {
 	g.writeln(`"fmt"`)
 	g.writeln(`"os"`)
 	g.writeln(`"os/exec"`)
+	g.writeln(`"runtime"`)
+	g.writeln(`"runtime/debug"`)
 	g.writeln(`"strings"`)
 	g.writeln(`"strconv"`)
 	g.indent--
@@ -318,6 +320,8 @@ func (g *Generator) writeImports(prog *parser.Program) {
 	g.writeln("var _ = fmt.Sprintf")
 	g.writeln("var _ = os.Exit")
 	g.writeln("var _ = exec.Command")
+	g.writeln("var _ = runtime.KeepAlive")
+	g.writeln("var _ = debug.SetGCPercent")
 	g.writeln("var _ = strings.Contains")
 	g.writeln("var _ = strconv.Itoa")
 }
@@ -566,6 +570,8 @@ func (g *Generator) genConstDecl(cd *parser.ConstDecl) {
 func (g *Generator) genEntryBlock(eb *parser.EntryBlock) {
 	g.writeln("func main() {")
 	g.indent++
+	g.writeln("debug.SetMemoryLimit(8 * 1024 * 1024 * 1024)")
+	g.writeln("debug.SetGCPercent(-1)")
 	g.genBlockStmts(eb.Body)
 	g.genTrailingExpr(eb.Body.Expr, false)
 	g.indent--
@@ -2156,7 +2162,8 @@ func (g *Generator) goTypeExpr(te parser.TypeExpr) string {
 			for _, ta := range t.TypeArgs {
 				args = append(args, g.goTypeExpr(ta))
 			}
-			return goName + "[" + strings.Join(args, ", ") + "]"
+			base := goName + "[" + strings.Join(args, ", ") + "]"
+			return base
 		}
 		return goName
 	case *parser.ArrayTypeExpr:
@@ -2182,6 +2189,40 @@ func (g *Generator) goTypeExpr(te parser.TypeExpr) string {
 	default:
 		return "interface{}"
 	}
+}
+
+// isPrimitiveType returns true for types that should NOT use pointer semantics.
+func isPrimitiveType(name string) bool {
+	switch name {
+	case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+		"f32", "f64", "str", "bool", "byte", "usize", "Self",
+		"int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
+		"float32", "float64", "string", "uint", "interface{}":
+		return true
+	}
+	return false
+}
+
+// isStructTypeName checks if a Go type name refers to a struct (not a sum type interface or primitive).
+func (g *Generator) isStructTypeName(goName string) bool {
+	if isPrimitiveType(goName) {
+		return false
+	}
+	// Check against registered types — sum types become interfaces, not structs
+	for _, t := range g.types {
+		switch st := t.(type) {
+		case *checker.SumType:
+			if st.Name == goName {
+				return false // sum type → interface, no pointer
+			}
+		case *checker.StructType:
+			if st.Name == goName {
+				return true
+			}
+		}
+	}
+	// Unknown types that aren't primitive — assume struct (safe default for pointer)
+	return !isPrimitiveType(goName) && goName != ""
 }
 
 func goTypeName(name string) string {
